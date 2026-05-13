@@ -439,13 +439,15 @@ public static class Compile
                         {
                             var signature = functionSignatures[i] = signatures[reader.ReadVarUInt32()];
                             var parms = signature.ParameterTypes.Concat([exportsBuilder]).ToArray();
-                            internalFunctions[i] = exportsBuilder.DefineMethod(
+                            var internalFunction = exportsBuilder.DefineMethod(
                                 $"👻 {i}",
                                 InternalFunctionAttributes,
                                 CallingConventions.Standard,
                                 Compilation.MultiValueHelper.ClrReturnType(signature.ReturnTypes),
                                 parms
                                 );
+                            CompilationContext.SetHotPathImplementationFlags(internalFunction);
+                            internalFunctions[i] = internalFunction;
                         }
 
                         // Initialize FunctionReferences immediately after Function section
@@ -947,6 +949,7 @@ public static class Compile
                             Compilation.MultiValueHelper.ClrReturnType(signature.ReturnTypes),
                             [.. signature.ParameterTypes, exportsBuilder]
                             );
+                        CompilationContext.SetHotPathImplementationFlags(invoker);
 
                         var invokerIL = invoker.GetILGenerator();
                         invokerIL.EmitLoadArg(signature.ParameterTypes.Length);
@@ -2611,6 +2614,7 @@ public static class Compile
                         MethodAttributes.Private | MethodAttributes.HideBySig,
                         Compilation.MultiValueHelper.ClrReturnType(signature.ReturnTypes),
                         signature.ParameterTypes);
+                    CompilationContext.SetHotPathImplementationFlags(wrapper);
                     var wrapperIL = wrapper.GetILGenerator();
                     for (var parameterIndex = 0; parameterIndex < signature.ParameterTypes.Length; parameterIndex++)
                         wrapperIL.EmitLoadArg(parameterIndex + 1);

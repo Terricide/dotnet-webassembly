@@ -1,4 +1,5 @@
-﻿using System.Reflection.Emit;
+using System.Reflection;
+using System.Reflection.Emit;
 using WebAssembly.Runtime;
 using WebAssembly.Runtime.Compilation;
 using FloatHelper = WebAssembly.Runtime.FloatHelper;
@@ -56,6 +57,7 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
 					context.CheckedExportsBuilder,
             ]
             );
+        CompilationContext.SetHotPathImplementationFlags(builder, inline: true);
         var il = builder.GetILGenerator();
 
         il.Emit(OpCodes.Ldarg_0);

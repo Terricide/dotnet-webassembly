@@ -147,6 +147,7 @@ public abstract class MemoryImmediateInstruction : Instruction, IEquatable<Memor
             typeof(uint),
             [typeof(uint), context.CheckedExportsBuilder]
             );
+        CompilationContext.SetHotPathImplementationFlags(builder, inline: true);
         var il = builder.GetILGenerator();
 
         void EmitSize()

@@ -132,6 +132,7 @@ public class CallIndirect : Instruction, IEquatable<CallIndirect>
                 MultiValueHelper.ClrReturnType(returns),
                 [.. parms, typeof(uint), context.CheckedExportsBuilder]
                 ));
+            CompilationContext.SetHotPathImplementationFlags(remapper, inline: true);
 
             var il = remapper.GetILGenerator();
             il.EmitLoadArg(parms.Length + 1);

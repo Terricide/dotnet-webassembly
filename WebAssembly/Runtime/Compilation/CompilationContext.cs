@@ -137,6 +137,18 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         MethodAttributes.HideBySig
         ;
 
+    internal static void SetHotPathImplementationFlags(MethodBuilder builder, bool inline = false)
+    {
+        var flags = default(MethodImplAttributes);
+        if (inline)
+            flags |= MethodImplAttributes.AggressiveInlining;
+#if NET8_0_OR_GREATER
+        flags |= MethodImplAttributes.AggressiveOptimization;
+#endif
+        if (flags != default)
+            builder.SetImplementationFlags(flags);
+    }
+
     private readonly Dictionary<HelperMethod, MethodBuilder> helperMethods = [];
 
     public MethodInfo this[HelperMethod helper]
