@@ -49,7 +49,7 @@ public class V128Load32Zero : SimdInstruction, IEquatable<V128Load32Zero>
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Call, V128Helper.V128Load32ZeroMethod.Reference);

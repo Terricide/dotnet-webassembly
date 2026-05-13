@@ -86,7 +86,7 @@ public class BranchIf : Instruction
             if (!isLoop)
                 targetBlockCtx.MarkEndLabelTargeted();
 
-            if (branchTypes.Length > 1)
+            if (branchTypes.Length > 0)
             {
                 var available = context.Stack.Count - targetBlockCtx.InitialStackSize;
                 if (available < branchTypes.Length)
@@ -101,25 +101,7 @@ public class BranchIf : Instruction
 
                 var discardCount = context.Stack.Count - targetBlockCtx.InitialStackSize - branchTypes.Length;
 
-                if (branchTypes.Length == 0)
-                {
-                    // Zero-arity: like void block.
-                    if (discardCount > 0)
-                    {
-                        var skipTaken = context.DefineLabel();
-                        var condLocal = context.DeclareLocal(typeof(int));
-                        context.Emit(OpCodes.Stloc, condLocal);
-                        context.Emit(OpCodes.Ldloc, condLocal);
-                        context.Emit(OpCodes.Brfalse, skipTaken);
-                        for (var k = 0; k < discardCount; k++)
-                            context.Emit(OpCodes.Pop);
-                        context.Emit(OpCodes.Br, label);
-                        context.MarkLabel(skipTaken);
-                    }
-                    else
-                        context.Emit(OpCodes.Brtrue, label);
-                }
-                else if (isLoop && discardCount == 0)
+                if (isLoop && discardCount == 0)
                 {
                     // Loop back-edge, no intermediates: params already on stack, just branch.
                     context.Emit(OpCodes.Brtrue, label);
@@ -209,7 +191,7 @@ public class BranchIf : Instruction
         }
         else
         {
-            if (branchTypes.Length > 1)
+            if (branchTypes.Length > 0)
             {
                 var actualTypes = context.PopStack(
                     this.OpCode,

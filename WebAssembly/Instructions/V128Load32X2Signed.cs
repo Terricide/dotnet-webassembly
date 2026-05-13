@@ -50,7 +50,7 @@ public class V128Load32X2Signed : SimdInstruction, IEquatable<V128Load32X2Signed
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Call, V128Helper.V128Load32x2SMethod.Reference);

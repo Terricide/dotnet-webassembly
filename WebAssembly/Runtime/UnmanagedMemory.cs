@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -10,6 +11,10 @@ namespace WebAssembly.Runtime;
 /// </summary>
 public sealed class UnmanagedMemory : IDisposable
 {
+    internal static readonly RegeneratingWeakReference<FieldInfo> SizeField = new(()
+        => typeof(UnmanagedMemory).GetTypeInfo().GetDeclaredField(nameof(RawSize))!);
+    internal static readonly RegeneratingWeakReference<FieldInfo> StartField = new(()
+        => typeof(UnmanagedMemory).GetTypeInfo().GetDeclaredField(nameof(RawStart))!);
     internal static readonly RegeneratingWeakReference<MethodInfo> SizeGetter = new(()
         => typeof(UnmanagedMemory).GetTypeInfo().DeclaredProperties.First(prop => prop.Name == nameof(Size)).GetMethod!);
     internal static readonly RegeneratingWeakReference<MethodInfo> StartGetter = new(()
@@ -57,17 +62,29 @@ public sealed class UnmanagedMemory : IDisposable
     /// <summary>
     /// The currently allocated size of memory in <see cref="Memory.PageSize"/> pages.
     /// </summary>
-    public uint Current => this.Size / Memory.PageSize;
+    public uint Current => this.RawSize / Memory.PageSize;
 
     /// <summary>
     /// The start of linear memory, or <see cref="IntPtr.Zero"/> if not used.
     /// </summary>
-    public IntPtr Start { get; private set; }
+    public IntPtr Start => this.RawStart;
 
     /// <summary>
     /// The current amount of memory allocated.
     /// </summary>
-    public uint Size { get; private set; }
+    public uint Size => this.RawSize;
+
+    /// <summary>
+    /// Raw start pointer used by generated code in hot paths.
+    /// </summary>
+    [SuppressMessage("Design", "CA1051:Do not declare visible instance fields", Justification = "Generated wasm IL uses direct field loads to avoid accessor-call overhead in hot paths.")]
+    public IntPtr RawStart;
+
+    /// <summary>
+    /// Raw byte length used by generated code in hot paths.
+    /// </summary>
+    [SuppressMessage("Design", "CA1051:Do not declare visible instance fields", Justification = "Generated wasm IL uses direct field loads to avoid accessor-call overhead in hot paths.")]
+    public uint RawSize;
 
     /// <summary>
     /// Grows memory by <paramref name="delta"/> multiplied by <see cref="Memory.PageSize"/>.
@@ -117,17 +134,17 @@ public sealed class UnmanagedMemory : IDisposable
 
             var newCurrent = oldCurrent + delta;
             var newSize = newCurrent * Memory.PageSize;
-            if (this.Start == default)
+            if (this.RawStart == default)
             {
-                this.Start = Marshal.AllocHGlobal(new IntPtr(newSize));
-                ZeroMemory(this.Start, newSize);
+                this.RawStart = Marshal.AllocHGlobal(new IntPtr(newSize));
+                ZeroMemory(this.RawStart, newSize);
             }
             else
             {
-                this.Start = Marshal.ReAllocHGlobal(this.Start, new IntPtr(newSize));
-                ZeroMemory(this.Start + checked((int)this.Size), newSize - this.Size);
+                this.RawStart = Marshal.ReAllocHGlobal(this.RawStart, new IntPtr(newSize));
+                ZeroMemory(this.RawStart + checked((int)this.RawSize), newSize - this.RawSize);
             }
-            this.Size = newSize;
+            this.RawSize = newSize;
 
             return oldCurrent;
         }
@@ -146,12 +163,12 @@ public sealed class UnmanagedMemory : IDisposable
     {
         var dstEnd = checked(dst + length);
         var srcEnd = checked(src + length);
-        if (dstEnd > this.Size)
-            throw new MemoryAccessOutOfRangeException(dstEnd, this.Size);
-        if (srcEnd > this.Size)
-            throw new MemoryAccessOutOfRangeException(srcEnd, this.Size);
+        if (dstEnd > this.RawSize)
+            throw new MemoryAccessOutOfRangeException(dstEnd, this.RawSize);
+        if (srcEnd > this.RawSize)
+            throw new MemoryAccessOutOfRangeException(srcEnd, this.RawSize);
         if (length == 0) return;
-        Buffer.MemoryCopy((void*)(this.Start + (int)src), (void*)(this.Start + (int)dst), length, length);
+        Buffer.MemoryCopy((void*)(this.RawStart + (int)src), (void*)(this.RawStart + (int)dst), length, length);
     }
 
     /// <summary>
@@ -164,13 +181,13 @@ public sealed class UnmanagedMemory : IDisposable
         var srcLen = src != null ? (uint)src.Length : 0u;
         var dstEnd = checked(dst + length);
         var srcEnd = checked(srcOffset + length);
-        if (dstEnd > this.Size)
-            throw new MemoryAccessOutOfRangeException(dstEnd, this.Size);
+        if (dstEnd > this.RawSize)
+            throw new MemoryAccessOutOfRangeException(dstEnd, this.RawSize);
         if (srcEnd > srcLen)
             throw new MemoryAccessOutOfRangeException(srcEnd, srcLen);
         if (length == 0) return;
         fixed (byte* pSrc = src)
-            Buffer.MemoryCopy(pSrc + srcOffset, (void*)(this.Start + (int)dst), length, length);
+            Buffer.MemoryCopy(pSrc + srcOffset, (void*)(this.RawStart + (int)dst), length, length);
     }
 
     /// <summary>
@@ -178,10 +195,10 @@ public sealed class UnmanagedMemory : IDisposable
     /// </summary>
     public unsafe void Fill(uint dst, uint value, uint length)
     {
-        if (checked(dst + length) > this.Size)
-            throw new MemoryAccessOutOfRangeException(checked(dst + length), this.Size);
+        if (checked(dst + length) > this.RawSize)
+            throw new MemoryAccessOutOfRangeException(checked(dst + length), this.RawSize);
         if (length == 0) return;
-        var p = (byte*)(this.Start + (int)dst);
+        var p = (byte*)(this.RawStart + (int)dst);
         var b = (byte)(value & 0xFF);
         for (uint i = 0; i < length; i++)
             p[i] = b;
@@ -199,14 +216,14 @@ public sealed class UnmanagedMemory : IDisposable
     {
         this.disposed = true;
 
-        if (this.Start == IntPtr.Zero)
+        if (this.RawStart == IntPtr.Zero)
             return;
-        if (this.Size == 0)
+        if (this.RawSize == 0)
             return;
 
-        Marshal.FreeHGlobal(this.Start);
-        this.Start = IntPtr.Zero;
-        this.Size = 0;
+        Marshal.FreeHGlobal(this.RawStart);
+        this.RawStart = IntPtr.Zero;
+        this.RawSize = 0;
         GC.SuppressFinalize(this);
     }
 }

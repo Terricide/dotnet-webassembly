@@ -65,7 +65,7 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
         il.Emit(OpCodes.Call, context[this.RangeCheckHelper, CreateRangeCheck]);
         il.Emit(OpCodes.Ldarg_3);
         il.Emit(OpCodes.Ldfld, memory);
-        il.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        il.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         il.Emit(OpCodes.Add);
         il.Emit(OpCodes.Ldarg_1);
         // For float types, reinterpret as integer bits before storing to preserve NaN payloads.

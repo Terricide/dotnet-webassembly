@@ -40,9 +40,12 @@ public class ElemDrop : MiscellaneousInstruction
 
     internal sealed override void Compile(CompilationContext context)
     {
-        // Active segments are implicitly dropped at instantiation; elem.drop on them is a no-op.
         if (!context.ElementSegments.TryGetValue(SegmentIndex, out var segField))
             throw new ModuleLoadException($"elem.drop: element segment {SegmentIndex} does not exist.", 0);
+
+        // Active and declarative segments are never live at runtime, so elem.drop on them is a no-op.
+        if (!context.PassiveElementSegments.Contains(SegmentIndex))
+            return;
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldnull);

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 
 #if NET5_0_OR_GREATER
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 #endif
 
 namespace WebAssembly.Runtime;
@@ -279,6 +280,7 @@ public static class V128Helper
 
     // --- shuffle / swizzle ---
     internal static readonly RegeneratingWeakReference<MethodInfo> Int8x16ShuffleMethod = new(() => typeof(V128Helper).GetMethod(nameof(Int8x16Shuffle), BindingFlags.Public | BindingFlags.Static)!);
+    internal static readonly RegeneratingWeakReference<MethodInfo> Int8x16ShuffleImmediateMethod = new(() => typeof(V128Helper).GetMethod(nameof(Int8x16ShuffleImmediate), BindingFlags.Public | BindingFlags.Static)!);
     internal static readonly RegeneratingWeakReference<MethodInfo> Int8x16SwizzleMethod = new(() => typeof(V128Helper).GetMethod(nameof(Int8x16Swizzle), BindingFlags.Public | BindingFlags.Static)!);
 
     // --- splats ---
@@ -345,12 +347,64 @@ public static class V128Helper
         for (var i = 0; i < 16; i++) r[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
         return Vector128.Create(r);
     }
+
+    /// <summary>i8x16 shuffle with precomputed source masks, avoiding per-call index array allocation.</summary>
+    public static Vector128<byte> Int8x16ShuffleImmediate(
+        Vector128<byte> a,
+        Vector128<byte> b,
+        Vector128<byte> maskA,
+        Vector128<byte> maskB)
+    {
+        if (Ssse3.IsSupported)
+            return Sse2.Or(Ssse3.Shuffle(a, maskA), Ssse3.Shuffle(b, maskB));
+
+        Span<byte> result = stackalloc byte[16];
+        for (var i = 0; i < 16; i++)
+        {
+            byte lane = 0;
+            var selectA = maskA.GetElement(i);
+            if ((selectA & 0x80) == 0)
+                lane = a.GetElement(selectA);
+
+            var selectB = maskB.GetElement(i);
+            if ((selectB & 0x80) == 0)
+                lane = b.GetElement(selectB);
+
+            result[i] = lane;
+        }
+
+        return Vector128.Create(
+            result[0], result[1], result[2], result[3],
+            result[4], result[5], result[6], result[7],
+            result[8], result[9], result[10], result[11],
+            result[12], result[13], result[14], result[15]);
+    }
     /// <summary>i8x16 swizzle (select lanes of a by indices in b, 0-15; out-of-range → 0).</summary>
     public static Vector128<byte> Int8x16Swizzle(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) { var idx = b.GetElement(i); r[i] = idx < 16 ? a.GetElement(idx) : (byte)0; }
-        return Vector128.Create(r);
+        if (Ssse3.IsSupported)
+        {
+            var highBit = Vector128.Create((byte)0x80);
+            var compareBase = Vector128.Create(unchecked((sbyte)(0x80 | 0x0F)));
+            var invalid = Sse2.CompareGreaterThan(Sse2.Xor(b, highBit).AsSByte(), compareBase);
+            var mask = Sse2.Or(
+                Sse2.AndNot(invalid.AsByte(), b),
+                Sse2.And(invalid.AsByte(), highBit));
+            return Ssse3.Shuffle(a, mask);
+        }
+
+        Span<byte> result = stackalloc byte[16];
+        for (var i = 0; i < 16; i++)
+        {
+            var idx = b.GetElement(i);
+            result[i] = idx < 16 ? a.GetElement(idx) : (byte)0;
+        }
+
+        return Vector128.Create(
+            result[0], result[1], result[2], result[3],
+            result[4], result[5], result[6], result[7],
+            result[8], result[9], result[10], result[11],
+            result[12], result[13], result[14], result[15]);
     }
 
     /// <summary>Splat i32 to all i8x16 lanes.</summary>
@@ -774,24 +828,182 @@ public static class V128Helper
     public static Vector128<byte> Int16x8AvgrU(Vector128<byte> a, Vector128<byte> b) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = (ushort)((a.AsUInt16().GetElement(i) + b.AsUInt16().GetElement(i) + 1) >> 1); return Vector128.Create(r).AsByte(); }
 
     // --- narrow (NET5+) ---
-    public static Vector128<byte> Int8x16NarrowI16x8S(Vector128<byte> a, Vector128<byte> b) { var r = new sbyte[16]; for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; } for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8+i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int8x16NarrowI16x8U(Vector128<byte> a, Vector128<byte> b) { var r = new byte[16]; for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; } for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8+i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; } return Vector128.Create(r); }
-    public static Vector128<byte> Int16x8NarrowI32x4S(Vector128<byte> a, Vector128<byte> b) { var r = new short[8]; for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; } for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4+i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8NarrowI32x4U(Vector128<byte> a, Vector128<byte> b) { var r = new ushort[8]; for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; } for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4+i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; } return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int8x16NarrowI16x8S(Vector128<byte> a, Vector128<byte> b)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.PackSignedSaturate(a.AsInt16(), b.AsInt16()).AsByte();
+
+        Span<sbyte> r = stackalloc sbyte[16];
+        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8 + i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        return Vector128.Create(
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
+            r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]).AsByte();
+    }
+    public static Vector128<byte> Int8x16NarrowI16x8U(Vector128<byte> a, Vector128<byte> b)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.PackUnsignedSaturate(a.AsInt16(), b.AsInt16());
+
+        Span<byte> r = stackalloc byte[16];
+        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
+        for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8 + i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
+        return Vector128.Create(
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
+            r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]);
+    }
+    public static Vector128<byte> Int16x8NarrowI32x4S(Vector128<byte> a, Vector128<byte> b)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.PackSignedSaturate(a.AsInt32(), b.AsInt32()).AsByte();
+
+        Span<short> r = stackalloc short[8];
+        for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4 + i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static Vector128<byte> Int16x8NarrowI32x4U(Vector128<byte> a, Vector128<byte> b)
+    {
+        if (Sse41.IsSupported)
+            return Sse41.PackUnsignedSaturate(a.AsInt32(), b.AsInt32()).AsByte();
+
+        Span<ushort> r = stackalloc ushort[8];
+        for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
+        for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4 + i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
 
     // --- extend (NET5+) ---
-    public static Vector128<byte> Int16x8ExtLowI8x16S(Vector128<byte> a) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtHighI8x16S(Vector128<byte> a) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(8+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtLowI8x16U(Vector128<byte> a) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = a.GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtHighI8x16U(Vector128<byte> a) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = a.GetElement(8+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtLowI16x8S(Vector128<byte> a) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtHighI16x8S(Vector128<byte> a) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(4+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtLowI16x8U(Vector128<byte> a) { var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtHighI16x8U(Vector128<byte> a) { var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(4+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtLowI32x4S(Vector128<byte> a) { var r = new long[2]; for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtHighI32x4S(Vector128<byte> a) { var r = new long[2]; for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(2+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtLowI32x4U(Vector128<byte> a) { var r = new ulong[2]; for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtHighI32x4U(Vector128<byte> a) { var r = new ulong[2]; for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(2+i); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int16x8ExtLowI8x16S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var sign = Sse2.CompareGreaterThan(Vector128<sbyte>.Zero, a.AsSByte()).AsByte();
+            return Sse2.UnpackLow(a, sign).AsByte();
+        }
+
+        Span<short> r = stackalloc short[8];
+        for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(i);
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static Vector128<byte> Int16x8ExtHighI8x16S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var sign = Sse2.CompareGreaterThan(Vector128<sbyte>.Zero, a.AsSByte()).AsByte();
+            return Sse2.UnpackHigh(a, sign).AsByte();
+        }
+
+        Span<short> r = stackalloc short[8];
+        for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(8 + i);
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static Vector128<byte> Int16x8ExtLowI8x16U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackLow(a, Vector128<byte>.Zero).AsByte();
+
+        Span<ushort> r = stackalloc ushort[8];
+        for (var i = 0; i < 8; i++) r[i] = a.GetElement(i);
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static Vector128<byte> Int16x8ExtHighI8x16U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackHigh(a, Vector128<byte>.Zero).AsByte();
+
+        Span<ushort> r = stackalloc ushort[8];
+        for (var i = 0; i < 8; i++) r[i] = a.GetElement(8 + i);
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static Vector128<byte> Int32x4ExtLowI16x8S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = a.AsInt16();
+            var sign = Sse2.CompareGreaterThan(Vector128<short>.Zero, lanes);
+            return Sse2.UnpackLow(lanes, sign).AsByte();
+        }
+
+        Span<int> r = stackalloc int[4];
+        for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i);
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static Vector128<byte> Int32x4ExtHighI16x8S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = a.AsInt16();
+            var sign = Sse2.CompareGreaterThan(Vector128<short>.Zero, lanes);
+            return Sse2.UnpackHigh(lanes, sign).AsByte();
+        }
+
+        Span<int> r = stackalloc int[4];
+        for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(4 + i);
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static Vector128<byte> Int32x4ExtLowI16x8U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackLow(a.AsUInt16(), Vector128<ushort>.Zero).AsByte();
+
+        Span<uint> r = stackalloc uint[4];
+        for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(i);
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static Vector128<byte> Int32x4ExtHighI16x8U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackHigh(a.AsUInt16(), Vector128<ushort>.Zero).AsByte();
+
+        Span<uint> r = stackalloc uint[4];
+        for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(4 + i);
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static Vector128<byte> Int64x2ExtLowI32x4S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = a.AsInt32();
+            var sign = Sse2.CompareGreaterThan(Vector128<int>.Zero, lanes);
+            return Sse2.UnpackLow(lanes, sign).AsByte();
+        }
+
+        Span<long> r = stackalloc long[2];
+        for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(i);
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
+    public static Vector128<byte> Int64x2ExtHighI32x4S(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = a.AsInt32();
+            var sign = Sse2.CompareGreaterThan(Vector128<int>.Zero, lanes);
+            return Sse2.UnpackHigh(lanes, sign).AsByte();
+        }
+
+        Span<long> r = stackalloc long[2];
+        for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(2 + i);
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
+    public static Vector128<byte> Int64x2ExtLowI32x4U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackLow(a.AsUInt32(), Vector128<uint>.Zero).AsByte();
+
+        Span<ulong> r = stackalloc ulong[2];
+        for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(i);
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
+    public static Vector128<byte> Int64x2ExtHighI32x4U(Vector128<byte> a)
+    {
+        if (Sse2.IsSupported)
+            return Sse2.UnpackHigh(a.AsUInt32(), Vector128<uint>.Zero).AsByte();
+
+        Span<ulong> r = stackalloc ulong[2];
+        for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(2 + i);
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
 
     // --- extmul (NET5+) ---
     public static Vector128<byte> Int16x8ExtmulLowI8x16S(Vector128<byte> a, Vector128<byte> b) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (short)((sbyte)a.GetElement(i) * (sbyte)b.GetElement(i)); return Vector128.Create(r).AsByte(); }
@@ -847,18 +1059,148 @@ public static class V128Helper
     public static unsafe Vector128<byte> V128Load64Zero(IntPtr ptr) { var p=(byte*)ptr; return Vector128.Create((long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56)),0L).AsByte(); }
 
     // --- extended loads (NET5+) ---
-    public static unsafe Vector128<byte> V128Load8x8S(IntPtr ptr) { var p = (byte*)ptr; var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (sbyte)p[i]; return Vector128.Create(r).AsByte(); }
-    public static unsafe Vector128<byte> V128Load8x8U(IntPtr ptr) { var p = (byte*)ptr; var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = p[i]; return Vector128.Create(r).AsByte(); }
-    public static unsafe Vector128<byte> V128Load16x4S(IntPtr ptr) { var p = (byte*)ptr; var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = (short)(p[i*2]|(p[i*2+1]<<8)); return Vector128.Create(r).AsByte(); }
-    public static unsafe Vector128<byte> V128Load16x4U(IntPtr ptr) { var p = (byte*)ptr; var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = (ushort)(p[i*2]|(p[i*2+1]<<8)); return Vector128.Create(r).AsByte(); }
-    public static unsafe Vector128<byte> V128Load32x2S(IntPtr ptr) { var p = (byte*)ptr; var r = new long[2]; for (var i = 0; i < 2; i++) r[i] = (int)(p[i*4]|(p[i*4+1]<<8)|(p[i*4+2]<<16)|(p[i*4+3]<<24)); return Vector128.Create(r).AsByte(); }
-    public static unsafe Vector128<byte> V128Load32x2U(IntPtr ptr) { var p = (byte*)ptr; var r = new ulong[2]; for (var i = 0; i < 2; i++) r[i] = (uint)(p[i*4]|(p[i*4+1]<<8)|(p[i*4+2]<<16)|(p[i*4+3]<<24)); return Vector128.Create(r).AsByte(); }
+    public static unsafe Vector128<byte> V128Load8x8S(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsByte();
+            var sign = Sse2.CompareGreaterThan(Vector128<sbyte>.Zero, lanes.AsSByte()).AsByte();
+            return Sse2.UnpackLow(lanes, sign).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<short> r = stackalloc short[8];
+        for (var i = 0; i < 8; i++) r[i] = (sbyte)p[i];
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load8x8U(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsByte();
+            return Sse2.UnpackLow(lanes, Vector128<byte>.Zero).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<ushort> r = stackalloc ushort[8];
+        for (var i = 0; i < 8; i++) r[i] = p[i];
+        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load16x4S(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsInt16();
+            var sign = Sse2.CompareGreaterThan(Vector128<short>.Zero, lanes);
+            return Sse2.UnpackLow(lanes, sign).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<int> r = stackalloc int[4];
+        for (var i = 0; i < 4; i++) r[i] = (short)(p[i * 2] | (p[i * 2 + 1] << 8));
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load16x4U(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsUInt16();
+            return Sse2.UnpackLow(lanes, Vector128<ushort>.Zero).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<uint> r = stackalloc uint[4];
+        for (var i = 0; i < 4; i++) r[i] = (ushort)(p[i * 2] | (p[i * 2 + 1] << 8));
+        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load32x2S(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsInt32();
+            var sign = Sse2.CompareGreaterThan(Vector128<int>.Zero, lanes);
+            return Sse2.UnpackLow(lanes, sign).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<long> r = stackalloc long[2];
+        for (var i = 0; i < 2; i++) r[i] = (int)(p[i * 4] | (p[i * 4 + 1] << 8) | (p[i * 4 + 2] << 16) | (p[i * 4 + 3] << 24));
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load32x2U(IntPtr ptr)
+    {
+        if (Sse2.IsSupported)
+        {
+            var lanes = Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>((void*)ptr)).AsUInt32();
+            return Sse2.UnpackLow(lanes, Vector128<uint>.Zero).AsByte();
+        }
+
+        var p = (byte*)ptr;
+        Span<ulong> r = stackalloc ulong[2];
+        for (var i = 0; i < 2; i++) r[i] = (uint)(p[i * 4] | (p[i * 4 + 1] << 8) | (p[i * 4 + 2] << 16) | (p[i * 4 + 3] << 24));
+        return Vector128.Create(r[0], r[1]).AsByte();
+    }
     public static unsafe Vector128<byte> V128Load8Splat(IntPtr ptr) => Vector128.Create(*((byte*)ptr));
     public static unsafe Vector128<byte> V128Load16Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create((short)(p[0]|(p[1]<<8))).AsByte(); }
     public static unsafe Vector128<byte> V128Load32Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)).AsByte(); }
     public static unsafe Vector128<byte> V128Load64Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create((long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56))).AsByte(); }
 #pragma warning restore CS1591
 #else
+    /// <summary>
+    /// i8x16 shuffle with precomputed source masks, avoiding per-call index array allocation.
+    /// .NET Standard 2.0 / V128Polyfill version.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static V128Polyfill Int8x16ShuffleImmediate(
+        V128Polyfill a,
+        V128Polyfill b,
+        V128Polyfill maskA,
+        V128Polyfill maskB)
+    {
+        byte r0 = ShuffleImmediateLane(a, b, maskA, maskB, 0);
+        byte r1 = ShuffleImmediateLane(a, b, maskA, maskB, 1);
+        byte r2 = ShuffleImmediateLane(a, b, maskA, maskB, 2);
+        byte r3 = ShuffleImmediateLane(a, b, maskA, maskB, 3);
+        byte r4 = ShuffleImmediateLane(a, b, maskA, maskB, 4);
+        byte r5 = ShuffleImmediateLane(a, b, maskA, maskB, 5);
+        byte r6 = ShuffleImmediateLane(a, b, maskA, maskB, 6);
+        byte r7 = ShuffleImmediateLane(a, b, maskA, maskB, 7);
+        byte r8 = ShuffleImmediateLane(a, b, maskA, maskB, 8);
+        byte r9 = ShuffleImmediateLane(a, b, maskA, maskB, 9);
+        byte r10 = ShuffleImmediateLane(a, b, maskA, maskB, 10);
+        byte r11 = ShuffleImmediateLane(a, b, maskA, maskB, 11);
+        byte r12 = ShuffleImmediateLane(a, b, maskA, maskB, 12);
+        byte r13 = ShuffleImmediateLane(a, b, maskA, maskB, 13);
+        byte r14 = ShuffleImmediateLane(a, b, maskA, maskB, 14);
+        byte r15 = ShuffleImmediateLane(a, b, maskA, maskB, 15);
+
+        return Create(
+            r0, r1, r2, r3,
+            r4, r5, r6, r7,
+            r8, r9, r10, r11,
+            r12, r13, r14, r15);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static byte ShuffleImmediateLane(
+        V128Polyfill a,
+        V128Polyfill b,
+        V128Polyfill maskA,
+        V128Polyfill maskB,
+        int laneIndex)
+    {
+        byte lane = 0;
+
+        byte selectA = GetByte(maskA, laneIndex);
+        if ((selectA & 0x80) == 0)
+            lane = GetByte(a, selectA & 0x0F);
+
+        byte selectB = GetByte(maskB, laneIndex);
+        if ((selectB & 0x80) == 0)
+            lane = GetByte(b, selectB & 0x0F);
+
+        return lane;
+    }
     /// <summary>The CLR type used to represent v128 at runtime on this platform.</summary>
     public static Type V128Type => typeof(V128Polyfill);
 
@@ -879,6 +1221,7 @@ public static class V128Helper
             B0 = b0, B1 = b1, B2 = b2, B3 = b3, B4 = b4, B5 = b5, B6 = b6, B7 = b7,
             B8 = b8, B9 = b9, B10 = b10, B11 = b11, B12 = b12, B13 = b13, B14 = b14, B15 = b15,
         };
+
 
     private static V128Polyfill ApplyBinary(V128Polyfill a, V128Polyfill b, Func<byte, byte, byte> op)
         => new() {
@@ -911,6 +1254,7 @@ public static class V128Helper
         for (var i = 0; i < 16; i++) r[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
         return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
     }
+
     public static V128Polyfill Int8x16Swizzle(V128Polyfill a, V128Polyfill b)
     {
         var src = new byte[] { a.B0,a.B1,a.B2,a.B3,a.B4,a.B5,a.B6,a.B7,a.B8,a.B9,a.B10,a.B11,a.B12,a.B13,a.B14,a.B15 };

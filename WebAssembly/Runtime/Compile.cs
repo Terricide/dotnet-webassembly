@@ -107,7 +107,7 @@ public static class Compile
 
                 var assembly = AssemblyBuilder.DefineDynamicAssembly(
                     new AssemblyName("CompiledWebAssembly"),
-                    AssemblyBuilderAccess.RunAndCollect);
+                    configuration.DynamicAssemblyAccess);
 
                 constructor = FromBinary(
                     assembly,
@@ -729,25 +729,40 @@ public static class Compile
             {
                 var exported = exportedFunctions[i];
                 var signature = functionSignatures[exported.Value];
+                var cleanedName = NameCleaner.CleanName(exported.Key);
+                var wasmReturnType = Compilation.MultiValueHelper.ClrReturnType(signature.ReturnTypes);
+                var wasmParameterTypes = signature.ParameterTypes;
+                var exportMethodBase = TryGetExportMethod(exportContainer, cleanedName, wasmReturnType, wasmParameterTypes);
+                var exportReturnType = exportMethodBase?.ReturnType ?? wasmReturnType;
+                var exportParameterTypes = exportMethodBase?.GetParameters().Select(parameter => parameter.ParameterType).ToArray() ?? wasmParameterTypes;
 
                 var method = exportsBuilder.DefineMethod(
-                    NameCleaner.CleanName(exported.Key),
+                    cleanedName,
                     ExportedFunctionAttributes,
                     CallingConventions.HasThis,
-                    Compilation.MultiValueHelper.ClrReturnType(signature.ReturnTypes),
-                    signature.ParameterTypes
+                    exportReturnType,
+                    exportParameterTypes
                     );
 #if NET9_0_OR_GREATER
                 if (configuration is not PersistedCompilerConfiguration) // Need to redesign this for persisted.
 #endif
                 method.SetCustomAttribute(NativeExportAttribute.Emit(ExternalKind.Function, exported.Key));
 
+                if (exportMethodBase != null)
+                    exportsBuilder.DefineMethodOverride(method, exportMethodBase);
+
                 var il = method.GetILGenerator();
-                for (var parm = 0; parm < signature.ParameterTypes.Length; parm++)
+                for (var parm = 0; parm < exportParameterTypes.Length; parm++)
+                {
                     il.Emit(OpCodes.Ldarg, parm + 1);
+                    if (exportParameterTypes[parm] != wasmParameterTypes[parm])
+                        il.Emit(OpCodes.Castclass, wasmParameterTypes[parm]);
+                }
 
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Call, internalFunctions[exported.Value]);
+                if (exportReturnType != null && wasmReturnType != null && exportReturnType != wasmReturnType)
+                    il.Emit(OpCodes.Castclass, exportReturnType);
                 il.Emit(OpCodes.Ret);
             }
         }
@@ -823,6 +838,61 @@ public static class Compile
 
         module.CreateGlobalFunctions();
         return instance.DeclaredConstructors.First();
+    }
+
+    static MethodInfo? TryGetExportMethod(Type? exportContainer, string methodName, Type? wasmReturnType, Type[] wasmParameterTypes)
+    {
+        if (exportContainer == null)
+            return null;
+
+        foreach (var candidate in exportContainer.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (!candidate.IsVirtual || candidate.Name != methodName)
+                continue;
+
+            var parameters = candidate.GetParameters();
+            if (parameters.Length != wasmParameterTypes.Length)
+                continue;
+
+            if (!IsCompatibleExportReturnType(candidate.ReturnType, wasmReturnType))
+                continue;
+
+            var compatible = true;
+            for (var i = 0; i < parameters.Length; i++)
+            {
+                if (!IsCompatibleExportParameterType(parameters[i].ParameterType, wasmParameterTypes[i]))
+                {
+                    compatible = false;
+                    break;
+                }
+            }
+
+            if (compatible)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    static bool IsCompatibleExportReturnType(Type exportReturnType, Type? wasmReturnType)
+    {
+        if (wasmReturnType == null)
+            return exportReturnType == typeof(void);
+
+        if (exportReturnType == wasmReturnType)
+            return true;
+
+        return !exportReturnType.IsValueType
+            && !wasmReturnType.IsValueType
+            && (exportReturnType.IsAssignableFrom(wasmReturnType) || wasmReturnType.IsAssignableFrom(exportReturnType));
+    }
+
+    static bool IsCompatibleExportParameterType(Type exportParameterType, Type wasmParameterType)
+    {
+        if (exportParameterType == wasmParameterType)
+            return true;
+
+        return !exportParameterType.IsValueType && !wasmParameterType.IsValueType;
     }
 
     private static (
@@ -1434,6 +1504,7 @@ public static class Compile
                     FieldAttributes.Private);
                 context.ElementSegments[(uint)i] = segField;
                 context.ElementSegmentTypes[(uint)i] = ElementType.FunctionReference;
+                context.PassiveElementSegments.Add((uint)i);
 
                 if (elemCount > 0)
                 {
@@ -1464,6 +1535,7 @@ public static class Compile
                     FieldAttributes.Private);
                 context.ElementSegments[(uint)i] = segField;
                 context.ElementSegmentTypes[(uint)i] = segRefType;
+                context.PassiveElementSegments.Add((uint)i);
 
                 if (elemCount > 0 && functionSignatures != null && internalFunctions != null)
                 {
@@ -2462,7 +2534,7 @@ public static class Compile
             var dataField = exportsBuilder.DefineInitializedData($"☣ Data {i}", data, FieldAttributes.Assembly | FieldAttributes.InitOnly);
             instanceConstructorIL.Emit(OpCodes.Ldarg_0);
             instanceConstructorIL.Emit(OpCodes.Ldfld, memory!);
-            instanceConstructorIL.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+            instanceConstructorIL.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
             instanceConstructorIL.Emit(OpCodes.Ldloc, segAddress);
             instanceConstructorIL.Emit(OpCodes.Conv_I);
             instanceConstructorIL.Emit(OpCodes.Add_Ovf_Un);

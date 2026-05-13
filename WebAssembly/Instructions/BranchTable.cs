@@ -156,6 +156,23 @@ public class BranchTable : Instruction, IEquatable<BranchTable>
         {
             var labelInstr = context.Depth.ElementAt(checked((int)label));
             var labelBranchTypes = GetBranchTypes(checked((int)label));
+            if (!isReachable)
+            {
+                if (defaultBranchTypes.Length != labelBranchTypes.Length)
+                {
+                    if (defaultBranchTypes.Length <= 1 && labelBranchTypes.Length <= 1)
+                    {
+                        var unreachableDefaultEffective = EffectiveLabelType(defaultLabelType);
+                        var unreachableLabelEffective = EffectiveLabelType(labelInstr);
+                        throw new LabelTypeMismatchException(this.OpCode, unreachableDefaultEffective, unreachableLabelEffective);
+                    }
+
+                    throw new CompilerException("All labels in br_table must have matching branch arities.");
+                }
+
+                continue;
+            }
+
             if (defaultBranchTypes.Length > 1 || labelBranchTypes.Length > 1)
             {
                 if (!defaultBranchTypes.SequenceEqual(labelBranchTypes))

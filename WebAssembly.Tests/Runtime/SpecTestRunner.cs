@@ -3,7 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.ExceptionServices;
 using System.Runtime.Intrinsics;
 using System.Text.Json;
@@ -45,6 +47,11 @@ static class SpecTestRunner
             IncludeFields = true,
         });
 
+    private static readonly CompilerConfiguration compilationConfiguration = new()
+    {
+        DynamicAssemblyAccess = AssemblyBuilderAccess.Run,
+    };
+
     public static void Run<TExports>(string pathBase, string json, Func<uint, bool>? skip)
         where TExports : class
     {
@@ -62,6 +69,8 @@ static class SpecTestRunner
 
         ObjectMethods? methodsByName = null;
         var moduleMethodsByName = new Dictionary<string, ObjectMethods>();
+        var currentModuleMethodCache = new Dictionary<string, ObjectMethod>();
+        var namedModuleMethodCache = new Dictionary<string, Dictionary<string, ObjectMethod>>();
 
         // From https://github.com/WebAssembly/spec/blob/master/interpreter/host/spectest.ml
         var imports = new ImportDictionary
@@ -86,18 +95,34 @@ static class SpecTestRunner
         Action trapExpected;
         object? result;
         object obj;
-        MethodInfo methodInfo;
+        ObjectMethod method;
         TExports? exports = null;
         foreach (var command in testInfo.commands)
         {
             if (skip != null && skip(command.line))
                 continue;
 
-            void GetMethod(TestAction action, out MethodInfo info, out object host)
+            void GetMethod(TestAction action, out ObjectMethod info, out object host)
             {
-                var methodSource = action.module == null ? methodsByName : moduleMethodsByName[action.module];
-                Assert.IsNotNull(methodSource, $"{command.line} has no method source.");
-                Assert.IsTrue(methodSource!.TryGetValue(NameCleaner.CleanName(action.field), out info!), $"{command.line} failed to look up method {action.field}");
+                var cleanedField = action.CleanedField;
+
+                if (action.module == null)
+                {
+                    Assert.IsNotNull(methodsByName, $"{command.line} has no method source.");
+                    Assert.IsTrue(currentModuleMethodCache.TryGetValue(cleanedField, out info!)
+                        || methodsByName!.TryGetValue(cleanedField, out info!), $"{command.line} failed to look up method {action.field}");
+                    currentModuleMethodCache[cleanedField] = info;
+                    host = methodsByName.Host;
+                    return;
+                }
+
+                var methodSource = moduleMethodsByName[action.module];
+                if (!namedModuleMethodCache.TryGetValue(action.module, out var moduleCache))
+                    namedModuleMethodCache[action.module] = moduleCache = [];
+
+                Assert.IsTrue(moduleCache.TryGetValue(cleanedField, out info!)
+                    || methodSource.TryGetValue(cleanedField, out info!), $"{command.line} failed to look up method {action.field}");
+                moduleCache[cleanedField] = info;
                 host = methodSource.Host;
             }
 
@@ -109,15 +134,19 @@ static class SpecTestRunner
                         var path = Path.Combine(pathBase, module.filename);
                         var parsed = Module.ReadFromBinary(path); // Ensure the module parser can read it.
                         Assert.IsNotNull(parsed);
-                        methodsByName = new ObjectMethods(exports = Compile.FromBinary<TExports>(path)(imports).Exports);
+                        methodsByName = new ObjectMethods(exports = Compile.FromBinary<TExports>(path, compilationConfiguration)(imports).Exports);
+                        currentModuleMethodCache.Clear();
                         if (module.name != null)
+                        {
                             moduleMethodsByName[module.name] = methodsByName;
+                            namedModuleMethodCache[module.name] = [];
+                        }
                         continue;
                     case AssertReturn assert:
-                        GetMethod(assert.action, out methodInfo, out obj);
+                        GetMethod(assert.action, out method, out obj);
                         try
                         {
-                            result = assert.action.Call(methodInfo, obj);
+                            result = assert.action.Call(method, obj);
                         }
                         catch (TargetInvocationException x) when (x.InnerException != null)
                         {
@@ -129,16 +158,9 @@ static class SpecTestRunner
                         }
                         if (assert.expected?.Length > 1)
                         {
-                            var actualValues = FlattenTupleValues(result).ToArray();
-                            if (actualValues.Length != assert.expected.Length)
-                                throw new AssertFailedException($"{command.line}: Not equal Int32Value: ({string.Join(", ", assert.expected.Select(e => e.BoxedValue))}) and {result}");
-                            for (var ei = 0; ei < assert.expected.Length; ei++)
-                            {
-                                var actualVal = actualValues[ei];
-                                var expectedVal = assert.expected[ei].BoxedValue;
-                                if (!expectedVal.Equals(actualVal))
-                                    throw new AssertFailedException($"{command.line}: Not equal {assert.expected[ei].GetType().Name}[{ei}]: {expectedVal} and {actualVal} (full: {result})");
-                            }
+                            if (!TryMatchFlattenedTupleValues(result, assert.expected, command.line, out var tupleMismatch))
+                                throw new AssertFailedException(tupleMismatch);
+
                             continue;
                         }
                         if (assert.expected?.Length > 0)
@@ -178,8 +200,8 @@ static class SpecTestRunner
                         }
                         continue;
                     case AssertReturnCanonicalNan assert:
-                        GetMethod(assert.action, out methodInfo, out obj);
-                        result = assert.action.Call(methodInfo, obj);
+                        GetMethod(assert.action, out method, out obj);
+                        result = assert.action.Call(method, obj);
                         switch (assert.expected[0].type)
                         {
                             case RawValueType.f32:
@@ -192,8 +214,8 @@ static class SpecTestRunner
                                 throw new AssertFailedException($"{assert.expected[0].type} doesn't support NaN checks for canonical NaN.");
                         }
                     case AssertReturnArithmeticNan assert:
-                        GetMethod(assert.action, out methodInfo, out obj);
-                        result = assert.action.Call(methodInfo, obj);
+                        GetMethod(assert.action, out method, out obj);
+                        result = assert.action.Call(method, obj);
                         switch (assert.expected[0].type)
                         {
                             case RawValueType.f32:
@@ -212,7 +234,7 @@ static class SpecTestRunner
                         {
                             try
                             {
-                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename));
+                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename), compilationConfiguration);
                             }
                             catch (TargetInvocationException x) when (x.InnerException != null)
                             {
@@ -334,10 +356,10 @@ static class SpecTestRunner
                     case AssertTrap assert:
                         trapExpected = () =>
                         {
-                            GetMethod(assert.action, out methodInfo, out obj);
+                            GetMethod(assert.action, out method, out obj);
                             try
                             {
-                                assert.action.Call(methodInfo, obj);
+                                assert.action.Call(method, obj);
                             }
                             catch (TargetInvocationException x) when (x.InnerException != null)
                             {
@@ -466,10 +488,10 @@ static class SpecTestRunner
                     case AssertExhaustion assert:
                         trapExpected = () =>
                         {
-                            GetMethod(assert.action, out methodInfo, out obj);
+                            GetMethod(assert.action, out method, out obj);
                             try
                             {
-                                assert.action.Call(methodInfo, obj);
+                                assert.action.Call(method, obj);
                             }
                             catch (TargetInvocationException x) when (x.InnerException != null)
                             {
@@ -516,7 +538,7 @@ static class SpecTestRunner
                         {
                             try
                             {
-                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename))(imports);
+                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename), compilationConfiguration)(imports);
                             }
                             catch (TargetInvocationException x) when (x.InnerException != null
 #if DEBUG
@@ -559,7 +581,7 @@ static class SpecTestRunner
                         {
                             try
                             {
-                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename))(imports);
+                                Compile.FromBinary<TExports>(Path.Combine(pathBase, assert.filename), compilationConfiguration)(imports);
                             }
                             catch (TargetInvocationException x) when (x.InnerException != null)
                             {
@@ -636,7 +658,46 @@ static class SpecTestRunner
             Assert.Inconclusive("Some scenarios were skipped.");
     }
 
-    class ObjectMethods : Dictionary<string, MethodInfo>
+    sealed class ObjectMethod
+    {
+        public readonly string Name;
+        public readonly MethodInfo MethodInfo;
+        readonly Func<object, object?[]?, object?> invoker;
+
+        public ObjectMethod(string name, MethodInfo methodInfo)
+        {
+            Name = name;
+            MethodInfo = methodInfo;
+            invoker = CreateInvoker(methodInfo);
+        }
+
+        public object? Invoke(object host, object?[]? args) => invoker(host, args);
+
+        static Func<object, object?[]?, object?> CreateInvoker(MethodInfo methodInfo)
+        {
+            var hostParameter = Expression.Parameter(typeof(object), "host");
+            var argsParameter = Expression.Parameter(typeof(object[]), "args");
+            var instance = Expression.Convert(hostParameter, methodInfo.DeclaringType!);
+            var parameters = methodInfo.GetParameters();
+            var arguments = new Expression[parameters.Length];
+
+            for (var i = 0; i < parameters.Length; i++)
+            {
+                arguments[i] = Expression.Convert(
+                    Expression.ArrayIndex(argsParameter, Expression.Constant(i)),
+                    parameters[i].ParameterType);
+            }
+
+            var call = Expression.Call(instance, methodInfo, arguments);
+            Expression body = methodInfo.ReturnType == typeof(void)
+                ? Expression.Block(call, Expression.Constant(null, typeof(object)))
+                : Expression.Convert(call, typeof(object));
+
+            return Expression.Lambda<Func<object, object?[]?, object?>>(body, hostParameter, argsParameter).Compile();
+        }
+    }
+
+    class ObjectMethods : Dictionary<string, ObjectMethod>
     {
         public readonly object Host;
 
@@ -647,14 +708,14 @@ static class SpecTestRunner
             foreach (var method in host
                 .GetType()
                 .GetMethods()
-                .Select(m => new { m.Name, MethodInfo = m })
+                .Select(m => new ObjectMethod(NameCleaner.CleanName(m.Name), m))
                 .Concat(host
-                .GetType()
-                .GetProperties()
-                .Where(p => p.GetGetMethod() != null)
-                .Select(p => new { p.Name, MethodInfo = p.GetGetMethod()! })))
+                    .GetType()
+                    .GetProperties()
+                    .Where(p => p.GetGetMethod() != null)
+                    .Select(p => new ObjectMethod(NameCleaner.CleanName(p.Name), p.GetGetMethod()!))))
             {
-                TryAdd(NameCleaner.CleanName(method.Name), method.MethodInfo);
+                TryAdd(method.Name, method);
             }
         }
     }
@@ -685,6 +746,37 @@ static class SpecTestRunner
             foreach (var nested in FlattenTupleValues(restField.GetValue(value)))
                 yield return nested;
         }
+    }
+
+    static bool TryMatchFlattenedTupleValues(object? result, TypedValue[] expected, uint line, out string mismatch)
+    {
+        using var actualValues = FlattenTupleValues(result).GetEnumerator();
+
+        for (var i = 0; i < expected.Length; i++)
+        {
+            if (!actualValues.MoveNext())
+            {
+                mismatch = $"{line}: Not equal Int32Value: ({string.Join(", ", expected.Select(e => e.BoxedValue))}) and {result}";
+                return false;
+            }
+
+            var actualValue = actualValues.Current;
+            var expectedValue = expected[i].BoxedValue;
+            if (!Equals(expectedValue, actualValue))
+            {
+                mismatch = $"{line}: Not equal {expected[i].GetType().Name}[{i}]: {expectedValue} and {actualValue} (full: {result})";
+                return false;
+            }
+        }
+
+        if (actualValues.MoveNext())
+        {
+            mismatch = $"{line}: Not equal Int32Value: ({string.Join(", ", expected.Select(e => e.BoxedValue))}) and {result}";
+            return false;
+        }
+
+        mismatch = string.Empty;
+        return true;
     }
 
     [JsonConverter(typeof(JsonStringEnumConverter<CommandType>))]
@@ -821,7 +913,21 @@ static class SpecTestRunner
         // in regular asserts and invoke args — so keeping them separate is safe.
         [JsonIgnore]
         public readonly RawValueType type = valueType;
-        public abstract object BoxedValue { get; }
+        object? boxedValue;
+        bool hasBoxedValue;
+
+        protected object? GetOrCreateBoxedValue(Func<object?> create)
+        {
+            if (!hasBoxedValue)
+            {
+                boxedValue = create();
+                hasBoxedValue = true;
+            }
+
+            return boxedValue;
+        }
+
+        public abstract object? BoxedValue { get; }
     }
 
     // Same two-ctor pattern as AssertReturn (see comment there): the parameterized primary lets
@@ -834,7 +940,7 @@ static class SpecTestRunner
         [JsonConverter(typeof(NanCapableUInt32Converter))]
         public uint value;
 
-        public override object BoxedValue => (int)value;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => (int)value);
 
         public override string ToString() => $"i32: {value}";
     }
@@ -847,7 +953,7 @@ static class SpecTestRunner
         [JsonConverter(typeof(NanCapableUInt64Converter))]
         public ulong value;
 
-        public override object BoxedValue => (long)value;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => (long)value);
 
         public override string ToString() => $"i64: {value}";
     }
@@ -856,7 +962,7 @@ static class SpecTestRunner
     {
         public float ActualValue => BitConverter.Int32BitsToSingle(unchecked((int)value));
 
-        public override object BoxedValue => ActualValue;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => ActualValue);
 
         public override string ToString() => $"f32: {BoxedValue}";
     }
@@ -865,7 +971,7 @@ static class SpecTestRunner
     {
         public double ActualValue => BitConverter.Int64BitsToDouble(unchecked((long)value));
 
-        public override object BoxedValue => ActualValue;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => ActualValue);
 
         public override string ToString() => $"f64: {BoxedValue}";
     }
@@ -875,7 +981,7 @@ static class SpecTestRunner
         public string? lane_type;
         public string[]? value;
 
-        public override object BoxedValue => ActualValue;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => ActualValue);
 
         // Returns true if any lane is a NaN pattern ("nan:canonical" or "nan:arithmetic").
         public bool HasNaN => value != null && value.Any(v => v.StartsWith("nan:", StringComparison.Ordinal));
@@ -888,12 +994,23 @@ static class SpecTestRunner
             return lane_type == "f64" ? 0x7FF8000000000000UL : 0x7FC00000UL;
         }
 
+        Vector128<byte> actualValue;
+        bool hasActualValue;
+
         public Vector128<byte> ActualValue
         {
             get
             {
+                if (hasActualValue)
+                    return actualValue;
+
                 if (value == null || value.Length == 0)
-                    return Vector128<byte>.Zero;
+                {
+                    actualValue = Vector128<byte>.Zero;
+                    hasActualValue = true;
+                    return actualValue;
+                }
+
                 var bytes = new byte[16];
                 switch (lane_type)
                 {
@@ -936,8 +1053,11 @@ static class SpecTestRunner
                         }
                         break;
                 }
-                return Vector128.Create(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+
+                actualValue = Vector128.Create(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                     bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+                hasActualValue = true;
+                return actualValue;
             }
         }
 
@@ -986,7 +1106,7 @@ static class SpecTestRunner
     {
         public string? value;
 
-        public override object BoxedValue => value == "null" ? (object)null! : value!;
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => value == "null" ? null : value);
 
         public override string ToString() => $"{type}: {value ?? "null"}";
     }
@@ -995,7 +1115,7 @@ static class SpecTestRunner
     {
         public string? value;
 
-        public override object BoxedValue => value == "null" ? (object)null! : throw new NotSupportedException($"funcref value '{value}' cannot be boxed - only null funcref supported");
+        public override object? BoxedValue => GetOrCreateBoxedValue(() => value == "null" ? null : throw new NotSupportedException($"funcref value '{value}' cannot be boxed - only null funcref supported"));
 
         public override string ToString() => $"{type}: {value ?? "null"}";
     }
@@ -1016,28 +1136,47 @@ static class SpecTestRunner
         public readonly TestActionType type = actionType;
         public string module;
         public string field;
+        string? cleanedFieldName;
 
-        public abstract object? Call(MethodInfo methodInfo, object obj);
+        [JsonIgnore]
+        public string CleanedField => cleanedFieldName ??= NameCleaner.CleanName(this.field);
+
+        public abstract object? Call(ObjectMethod method, object obj);
     }
 
     class Invoke() : TestAction(TestActionType.invoke)
     {
         public TypedValue[] args;
+        object?[]? boxedArgs;
 
-        public override object? Call(MethodInfo methodInfo, object obj)
+        object?[] BoxedArgs
         {
-            return methodInfo.Invoke(obj, args.Select(arg => arg.BoxedValue).ToArray());
+            get
+            {
+                if (boxedArgs != null)
+                    return boxedArgs;
+
+                if (args.Length == 0)
+                    return boxedArgs = [];
+
+                boxedArgs = new object[args.Length];
+                for (var i = 0; i < args.Length; i++)
+                    boxedArgs[i] = args[i].BoxedValue;
+
+                return boxedArgs;
+            }
         }
+
+        public override object? Call(ObjectMethod method, object obj) => method.Invoke(obj, BoxedArgs);
 
         public override string ToString() => $"{field}({module})[{string.Join(',', (IEnumerable<TypedValue>)args)}]";
     }
 
     class Get() : TestAction(TestActionType.get)
     {
-        public override object? Call(MethodInfo methodInfo, object obj)
-        {
-            return methodInfo.Invoke(obj, []);
-        }
+        static readonly object?[] emptyArguments = [];
+
+        public override object? Call(ObjectMethod method, object obj) => method.Invoke(obj, emptyArguments);
     }
 
     abstract class AssertCommand(CommandType commandType) : Command(commandType)

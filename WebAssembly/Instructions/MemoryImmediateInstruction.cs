@@ -163,14 +163,16 @@ public abstract class MemoryImmediateInstruction : Instruction, IEquatable<Memor
                 il.Emit(OpCodes.Ldc_I4_S, (sbyte)size);
         }
 
+        var outOfRange = il.DefineLabel();
+
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldfld, context.Memory);
-        il.Emit(OpCodes.Call, UnmanagedMemory.SizeGetter);
+        il.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
         il.Emit(OpCodes.Ldarg_0);
         EmitSize();
         il.Emit(OpCodes.Add_Ovf_Un);
-        var outOfRange = il.DefineLabel();
         il.Emit(OpCodes.Blt_Un_S, outOfRange);
+
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ret);
         il.MarkLabel(outOfRange);
@@ -190,4 +192,5 @@ public abstract class MemoryImmediateInstruction : Instruction, IEquatable<Memor
         il.Emit(OpCodes.Throw);
         return builder;
     }
+
 }

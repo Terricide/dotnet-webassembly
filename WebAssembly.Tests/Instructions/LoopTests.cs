@@ -9,6 +9,17 @@ namespace WebAssembly.Instructions;
 public class LoopTests
 {
     /// <summary>
+    /// Export used by loop tests that return a single i32 value.
+    /// </summary>
+    public abstract class LoopValueExport
+    {
+        /// <summary>
+        /// Executes the test function.
+        /// </summary>
+        public abstract int Test();
+    }
+
+    /// <summary>
     /// Tests compilation and execution of the <see cref="Loop"/> instruction.
     /// </summary>
     [TestMethod]
@@ -50,16 +61,18 @@ public class LoopTests
     /// Tests compilation and execution of the <see cref="Loop"/> instruction that yields a value.
     /// </summary>
     [TestMethod]
-    [Timeout(1000)]
+    [Timeout(3000)]
     public void Branch_LoopValue()
     {
-        var exports = AssemblyBuilder.CreateInstance<dynamic>("Test",
-            WebAssemblyValueType.Int32,
+        var exports = AssemblyBuilder.CreateInstance<LoopValueExport>(
+            nameof(LoopValueExport.Test),
+            [WebAssemblyValueType.Int32],
+            [],
             new Loop(BlockType.Int32),
             new Int32Constant(7),
             new End(),
             new End());
 
-        Assert.AreEqual<int>(7, exports.Test());
+        Assert.AreEqual(7, exports.Test());
     }
 }

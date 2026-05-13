@@ -60,7 +60,7 @@ public class MemorySize : Instruction
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.Memory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.SizeGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
         context.Emit(OpCodes.Ldc_I4, Memory.PageSize);
         context.Emit(OpCodes.Div_Un);
 

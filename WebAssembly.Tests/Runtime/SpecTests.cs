@@ -7,6 +7,7 @@ namespace WebAssembly.Runtime;
 /// Runs the official specification's tests.
 /// </summary>
 [TestClass]
+[DoNotParallelize]
 public class SpecTests
 {
     private static string DataPath(params string[] parts)

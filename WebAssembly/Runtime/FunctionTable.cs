@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 
@@ -31,6 +32,18 @@ public class FunctionTable : TableImport
         .GetTypeInfo()
         .GetDeclaredProperty(nameof(Length))!
         .GetMethod!
+        );
+
+    internal static readonly RegeneratingWeakReference<MethodInfo> DelegatesGetter = new(() =>
+        typeof(FunctionTable)
+        .GetTypeInfo()
+        .GetDeclaredProperty(nameof(Delegates))!
+        .GetMethod!
+        );
+    internal static readonly RegeneratingWeakReference<FieldInfo> DelegatesField = new(() =>
+        typeof(FunctionTable)
+        .GetTypeInfo()
+        .GetDeclaredField(nameof(RawDelegates))!
         );
 
     internal static readonly RegeneratingWeakReference<MethodInfo> GrowMethod = new(() =>
@@ -85,10 +98,14 @@ public class FunctionTable : TableImport
 
         this.Initial = initial;
         this.Maximum = maximum;
-        this.delegates = new Delegate[initial];
+        this.RawDelegates = new Delegate[initial];
     }
 
-    private Delegate?[] delegates;
+    /// <summary>
+    /// Raw delegate storage used by generated code in hot paths.
+    /// </summary>
+    [SuppressMessage("Design", "CA1051:Do not declare visible instance fields", Justification = "Generated wasm IL uses direct field loads to avoid accessor-call overhead in hot paths.")]
+    public Delegate?[] RawDelegates;
 
     /// <summary>
     /// Gets or sets the delegate at the indicated index.
@@ -98,14 +115,20 @@ public class FunctionTable : TableImport
     /// <exception cref="IndexOutOfRangeException"><paramref name="index"/> does not fall within the range of the table.</exception>
     public Delegate? this[int index]
     {
-        get => this.delegates[index];
-        set => this.delegates[index] = value;
+        get => this.RawDelegates[index];
+        set => this.RawDelegates[index] = value;
     }
+
+    /// <summary>
+    /// Gets the raw delegate storage backing this table.
+    /// </summary>
+    public Delegate?[] Delegates => this.RawDelegates;
+
 
     /// <summary>
     /// Gets the current size of the table.
     /// </summary>
-    public uint Length => (uint)this.delegates.Length;
+    public uint Length => (uint)this.RawDelegates.Length;
 
     /// <summary>
     /// Increases the size of the instance by a specified number of elements.
@@ -129,11 +152,11 @@ public class FunctionTable : TableImport
         if (newSize > int.MaxValue)
             return uint.MaxValue; // Can't allocate array larger than int.MaxValue
 
-        Array.Resize(ref delegates, (int)newSize);
+        Array.Resize(ref RawDelegates, (int)newSize);
         
         // Initialize new slots with initValue
         for (var i = oldSize; i < newSize; i++)
-            delegates[i] = initValue;
+            RawDelegates[i] = initValue;
 
         return oldSize;
     }
@@ -148,13 +171,13 @@ public class FunctionTable : TableImport
         
         // Check for overflow
         if (length > uint.MaxValue - dst || length > uint.MaxValue - srcOffset)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
             
         var dstEnd = dst + length;
         var srcEnd = srcOffset + length;
         // Trigger natural IndexOutOfRangeException on bounds violations (atomic pre-check).
         if (dstEnd > (uint)this.Length || srcEnd > srcLen)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
         if (length == 0) return;
         for (var i = 0u; i < length; i++)
             this[(int)(dst + i)] = src![(int)(srcOffset + i)];
@@ -167,12 +190,12 @@ public class FunctionTable : TableImport
     {
         // Check for overflow
         if (length > uint.MaxValue - dst || length > uint.MaxValue - src)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
             
         var dstEnd = dst + length;
         var srcEnd = src + length;
         if (dstEnd > (uint)this.Length || srcEnd > (uint)this.Length)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
         if (length == 0) return;
         if (dst <= src)
             for (var i = 0u; i < length; i++)
@@ -189,12 +212,12 @@ public class FunctionTable : TableImport
     {
         // Check for overflow
         if (length > uint.MaxValue - dstIndex || length > uint.MaxValue - srcIndex)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
             
         var dstEnd = dstIndex + length;
         var srcEnd = srcIndex + length;
         if (dstEnd > (uint)this.Length || srcEnd > (uint)srcTable.Length)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
         if (length == 0) return;
         
         // If same table and overlapping, handle carefully
@@ -219,11 +242,11 @@ public class FunctionTable : TableImport
     {
         // Check for overflow
         if (len > uint.MaxValue - dst)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException (out of bounds)
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException (out of bounds)
             
         var end = dst + len;
         if (end > (uint)this.Length)
-            _ = this.delegates[int.MaxValue]; // throws IndexOutOfRangeException
+            _ = this.RawDelegates[int.MaxValue]; // throws IndexOutOfRangeException
 
         for (uint i = 0; i < len; i++)
             this[(int)(dst + i)] = value;

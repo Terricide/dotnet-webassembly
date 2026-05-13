@@ -46,7 +46,7 @@ public abstract class MemoryReadInstruction : MemoryImmediateInstruction
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         byte alignment;

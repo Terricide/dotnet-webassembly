@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Reflection;
+using System.Reflection.Emit;
 using WebAssembly.Runtime.Compilation;
 
 namespace WebAssembly.Runtime;
@@ -20,6 +21,12 @@ public class CompilerConfiguration
     internal virtual string CompiledTypeName => "CompiledExports";
 
     internal virtual Type NeutralizeType(Type type) => type;
+
+    /// <summary>
+    /// Gets or sets the dynamic assembly access mode used for runtime compilation.
+    /// Defaults to <see cref="AssemblyBuilderAccess.RunAndCollect"/>.
+    /// </summary>
+    public AssemblyBuilderAccess DynamicAssemblyAccess { get; set; } = AssemblyBuilderAccess.RunAndCollect;
 
     [DebuggerBrowsable(DebuggerBrowsableState.Never)] //Wrapped by a property
     private GetDelegateForTypeCallback getDelegateForType = GetStandardDelegateForType;

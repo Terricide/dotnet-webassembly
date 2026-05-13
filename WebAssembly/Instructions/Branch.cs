@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Reflection.Emit;
 using WebAssembly.Runtime;
 using WebAssembly.Runtime.Compilation;
@@ -89,7 +90,7 @@ public class Branch : Instruction
             if (!isLoop)
                 targetBlockCtx.MarkEndLabelTargeted();
 
-            if (branchTypes.Length > 1)
+            if (branchTypes.Length > 0)
             {
                 var available = context.Stack.Count - targetBlockCtx.InitialStackSize;
                 if (available < branchTypes.Length)
@@ -102,7 +103,7 @@ public class Branch : Instruction
                     if (actual != branchTypes[k])
                         throw new StackTypeInvalidException(this.OpCode, branchTypes[k], actual);
                 }
-                if (!isLoop && branchTypes.Length > 0)
+                if (!isLoop)
                 {
                     // Stash results into ResultLocals (create if needed).
                     if (targetBlockCtx.ResultLocals == null)
@@ -138,6 +139,15 @@ public class Branch : Instruction
                 for (var i = 0; i < discardCount; i++)
                     context.Emit(OpCodes.Pop);
             }
+        }
+        else if (branchTypes.Length > 0)
+        {
+            var actualTypes = context.PopStack(
+                this.OpCode,
+                branchTypes.Cast<WebAssemblyValueType?>().Reverse(),
+                branchTypes.Length).ToArray();
+            foreach (var actualType in actualTypes.Reverse())
+                context.Stack.Push(actualType!.Value);
         }
         else if (!isLoop && branchSig == null && blockType.Type.TryToValueType(out var expectedType2))
         {

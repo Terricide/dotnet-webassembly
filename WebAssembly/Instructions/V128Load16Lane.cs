@@ -58,7 +58,7 @@ public class V128Load16Lane : SimdInstruction, IEquatable<V128Load16Lane>
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Ldloc, vecLocal);

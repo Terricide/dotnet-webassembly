@@ -116,11 +116,14 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
     /// <summary>Maps data segment index → FieldBuilder for passive segment byte[] fields.</summary>
     public readonly Dictionary<uint, FieldBuilder> DataSegments = [];
 
-    /// <summary>Maps element segment index → FieldBuilder for passive segment Delegate?[] fields.</summary>
+    /// <summary>Maps element segment index → FieldBuilder for element-segment backing fields.</summary>
     public readonly Dictionary<uint, FieldBuilder> ElementSegments = [];
 
-    /// <summary>Maps passive element segment index → its element type (funcref or externref).</summary>
+    /// <summary>Maps element segment index → its element type (funcref or externref).</summary>
     public readonly Dictionary<uint, ElementType> ElementSegmentTypes = [];
+
+    /// <summary>Indices of passive element segments, which are the only segments valid for table.init and elem.drop.</summary>
+    public readonly HashSet<uint> PassiveElementSegments = [];
 
     /// <summary>
     /// Indicates whether ref.func declaration checks should be enforced during compilation.

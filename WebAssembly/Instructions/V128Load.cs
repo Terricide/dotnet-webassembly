@@ -52,7 +52,7 @@ public class V128Load : SimdInstruction, IEquatable<V128Load>
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Call, V128Helper.ReadUnalignedMethod.Reference);

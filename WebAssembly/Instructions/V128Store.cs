@@ -55,7 +55,7 @@ public class V128Store : SimdInstruction, IEquatable<V128Store>
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Ldloc, valueLocal);

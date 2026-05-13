@@ -35,20 +35,25 @@ public class Int8x16Shuffle : SimdInstruction, IEquatable<Int8x16Shuffle>
                 throw new Runtime.CompilerException($"Lane index {Indices[i]} at position {i} is out of range for i8x16.shuffle (max 31).");
         context.PopStackNoReturn(this.OpCode, WebAssemblyValueType.V128, WebAssemblyValueType.V128);
 
-        // Push indices as a byte[] constant: newarr + stelem per element
-        var indices = Indices;
-        context.Emit(OpCodes.Ldc_I4, 16);
-        context.Emit(OpCodes.Newarr, typeof(byte));
+        EmitMaskVector(context, selectFirstVector: true);
+        EmitMaskVector(context, selectFirstVector: false);
+
+        context.Emit(OpCodes.Call, V128Helper.Int8x16ShuffleImmediateMethod.Reference);
+        context.Stack.Push(WebAssemblyValueType.V128);
+    }
+
+    void EmitMaskVector(CompilationContext context, bool selectFirstVector)
+    {
         for (var i = 0; i < 16; i++)
         {
-            context.Emit(OpCodes.Dup);
-            context.Emit(OpCodes.Ldc_I4, i);
-            context.Emit(OpCodes.Ldc_I4, (int)indices[i]);
-            context.Emit(OpCodes.Stelem_I1);
+            byte lane = Indices[i];
+            byte mask = selectFirstVector
+                ? lane < 16 ? lane : (byte)0x80
+                : lane >= 16 ? (byte)(lane - 16) : (byte)0x80;
+            Int32Constant.Emit(context, mask);
         }
 
-        context.Emit(OpCodes.Call, V128Helper.Int8x16ShuffleMethod.Reference);
-        context.Stack.Push(WebAssemblyValueType.V128);
+        context.Emit(OpCodes.Call, V128Helper.CreateMethod.Reference);
     }
 
     /// <inheritdoc/>

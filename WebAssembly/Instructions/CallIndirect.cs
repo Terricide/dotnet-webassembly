@@ -136,8 +136,10 @@ public class CallIndirect : Instruction, IEquatable<CallIndirect>
             var il = remapper.GetILGenerator();
             il.EmitLoadArg(parms.Length + 1);
             il.Emit(OpCodes.Ldfld, table);
+            il.Emit(OpCodes.Ldfld, FunctionTable.DelegatesField);
             il.EmitLoadArg(parms.Length);
-            il.Emit(OpCodes.Call, FunctionTable.IndexGetter);
+            il.Emit(OpCodes.Conv_I4);
+            il.Emit(OpCodes.Ldelem_Ref);
             il.Emit(OpCodes.Castclass, invoker.DeclaringType!);
 
             for (var k = 0; k < parms.Length; k++)

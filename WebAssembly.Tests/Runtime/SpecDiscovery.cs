@@ -9,7 +9,7 @@ namespace WebAssembly.Runtime;
 /// <summary>
 /// Maintenance helper that re-derives per-line skip predicates for <see cref="SpecTests"/>
 /// after a spec test refresh. <see cref="DiscoverAllFailures"/> runs every category through
-/// <see cref="SpecTestRunner.Discover"/> and writes the results to a file in the OS temp dir.
+/// <see cref="SpecTestRunner.Discover"/> and writes the results to a uniquely named file in the OS temp dir.
 /// </summary>
 /// <remarks>
 /// Workflow when refreshing the spec test suite:
@@ -22,7 +22,7 @@ namespace WebAssembly.Runtime;
 /// <c>dotnet test ... --filter FullyQualifiedName~SpecDiscovery</c>.
 /// It walks <c>SpecTestData/</c>, runs every category through <see cref="SpecTestRunner.Discover"/>
 /// (which collects all failures rather than throwing on the first), and writes a (line, message)
-/// report to <c>{tempPath}/spec-discovery.txt</c>.</item>
+/// report to <c>{tempPath}/spec-discovery-*.txt</c>.</item>
 /// <item>Use that report to author per-test skip predicates: one <c>HashSet&lt;uint&gt;</c> per
 /// method body in <see cref="SpecTests"/>, with a comment summarizing the failure categories.</item>
 /// <item>Restore the <see cref="IgnoreAttribute"/> here. The full SpecTests suite should be
@@ -61,7 +61,7 @@ public class SpecDiscovery
             .OrderBy(j => j.Category, StringComparer.Ordinal)
             .ToList();
 
-        var outputPath = Path.Combine(Path.GetTempPath(), "spec-discovery.txt");
+        var outputPath = Path.Combine(Path.GetTempPath(), $"spec-discovery-{Guid.NewGuid():N}.txt");
         using var sw = new StreamWriter(outputPath);
         sw.WriteLine($"# Spec discovery report ({jobs.Count} categories)");
         sw.WriteLine();

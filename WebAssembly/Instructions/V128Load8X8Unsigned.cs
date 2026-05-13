@@ -50,7 +50,7 @@ public class V128Load8X8Unsigned : SimdInstruction, IEquatable<V128Load8X8Unsign
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Call, UnmanagedMemory.StartGetter);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
         context.Emit(OpCodes.Add);
 
         context.Emit(OpCodes.Call, V128Helper.V128Load8x8UMethod.Reference);
