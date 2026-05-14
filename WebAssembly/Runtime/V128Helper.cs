@@ -322,6 +322,7 @@ public static class V128Helper
         => Unsafe.WriteUnaligned<System.Runtime.Intrinsics.Vector128<byte>>((void*)ptr, value);
 
     /// <summary>Create a v128 from 16 bytes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Create(
         byte b0, byte b1, byte b2, byte b3, byte b4, byte b5, byte b6, byte b7,
         byte b8, byte b9, byte b10, byte b11, byte b12, byte b13, byte b14, byte b15)
@@ -429,6 +430,7 @@ public static class V128Helper
     /// <summary>Extract unsigned i16 lane as i32.</summary>
     public static int Int16x8ExtractLaneU(Vector128<byte> v, int lane) => v.AsUInt16().GetElement(lane);
     /// <summary>Extract i32 lane.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Int32x4ExtractLane(Vector128<byte> v, int lane) => v.AsInt32().GetElement(lane);
     /// <summary>Extract i64 lane.</summary>
     public static long Int64x2ExtractLane(Vector128<byte> v, int lane) => v.AsInt64().GetElement(lane);
@@ -547,10 +549,12 @@ public static class V128Helper
     /// <summary>i32x4 negate.</summary>
     public static Vector128<byte> Int32x4Neg(Vector128<byte> a) => (-a.AsInt32()).AsByte();
     /// <summary>i32x4 add.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4Add(Vector128<byte> a, Vector128<byte> b) => (a.AsInt32() + b.AsInt32()).AsByte();
     /// <summary>i32x4 subtract.</summary>
     public static Vector128<byte> Int32x4Sub(Vector128<byte> a, Vector128<byte> b) => (a.AsInt32() - b.AsInt32()).AsByte();
     /// <summary>i32x4 multiply.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4Mul(Vector128<byte> a, Vector128<byte> b) => (a.AsInt32() * b.AsInt32()).AsByte();
     /// <summary>i32x4 signed min.</summary>
     public static Vector128<byte> Int32x4MinS(Vector128<byte> a, Vector128<byte> b) => Vector128.Min(a.AsInt32(), b.AsInt32()).AsByte();
@@ -898,6 +902,7 @@ public static class V128Helper
         for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(8 + i);
         return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int16x8ExtLowI8x16U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
@@ -942,6 +947,7 @@ public static class V128Helper
         for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(4 + i);
         return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4ExtLowI16x8U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
@@ -1045,6 +1051,7 @@ public static class V128Helper
     public static Vector128<byte> Float64x2PromoteLowF32x4(Vector128<byte> a) { var r = new double[2]; r[0] = a.AsSingle().GetElement(0); r[1] = a.AsSingle().GetElement(1); return Vector128.Create(r).AsByte(); }
 
     // --- load/store lane (NET5+) ---
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load8Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.WithElement(lane, *(byte*)ptr);
     public static unsafe Vector128<byte> V128Load16Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var p=(byte*)ptr; return vec.AsInt16().WithElement(lane,(short)(p[0]|(p[1]<<8))).AsByte(); }
     public static unsafe Vector128<byte> V128Load32Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var p=(byte*)ptr; return vec.AsInt32().WithElement(lane,p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)).AsByte(); }
@@ -1140,6 +1147,7 @@ public static class V128Helper
         for (var i = 0; i < 2; i++) r[i] = (uint)(p[i * 4] | (p[i * 4 + 1] << 8) | (p[i * 4 + 2] << 16) | (p[i * 4 + 3] << 24));
         return Vector128.Create(r[0], r[1]).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load8Splat(IntPtr ptr) => Vector128.Create(*((byte*)ptr));
     public static unsafe Vector128<byte> V128Load16Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create((short)(p[0]|(p[1]<<8))).AsByte(); }
     public static unsafe Vector128<byte> V128Load32Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)).AsByte(); }
