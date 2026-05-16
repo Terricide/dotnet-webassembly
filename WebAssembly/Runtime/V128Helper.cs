@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 #if NET5_0_OR_GREATER
 using System.Runtime.Intrinsics;
@@ -313,6 +314,16 @@ public static class V128Helper
     /// <summary>The CLR type used to represent v128 at runtime on this platform.</summary>
     public static Type V128Type => typeof(System.Runtime.Intrinsics.Vector128<byte>);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe Vector128<T> ReadVector128<T>(ReadOnlySpan<T> values)
+        where T : unmanaged
+        => Unsafe.ReadUnaligned<Vector128<T>>(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(values)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void WriteVector128<T>(Span<T> destination, Vector128<T> value)
+        where T : unmanaged
+        => Unsafe.WriteUnaligned(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(destination)), value);
+
     /// <summary>Read a 128-bit vector from an unaligned native pointer.</summary>
     public static unsafe System.Runtime.Intrinsics.Vector128<byte> ReadUnaligned(IntPtr ptr)
         => Unsafe.ReadUnaligned<System.Runtime.Intrinsics.Vector128<byte>>((void*)ptr);
@@ -342,11 +353,13 @@ public static class V128Helper
     /// <summary>i8x16 shuffle (two vectors, 16 byte lane indices 0-31).</summary>
     public static Vector128<byte> Int8x16Shuffle(Vector128<byte> a, Vector128<byte> b, byte[] indices)
     {
-        var src = new byte[32];
-        for (var i = 0; i < 16; i++) { src[i] = a.GetElement(i); src[16+i] = b.GetElement(i); }
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) r[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
-        return Vector128.Create(r);
+        Span<byte> src = stackalloc byte[32];
+        WriteVector128(src, a);
+        WriteVector128(src[16..], b);
+        Span<byte> result = stackalloc byte[16];
+        for (var i = 0; i < 16; i++)
+            result[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
+        return ReadVector128(result);
     }
 
     /// <summary>i8x16 shuffle with precomputed source masks, avoiding per-call index array allocation.</summary>
@@ -359,26 +372,30 @@ public static class V128Helper
         if (Ssse3.IsSupported)
             return Sse2.Or(Ssse3.Shuffle(a, maskA), Ssse3.Shuffle(b, maskB));
 
+        Span<byte> aLanes = stackalloc byte[16];
+        Span<byte> bLanes = stackalloc byte[16];
+        Span<byte> maskALanes = stackalloc byte[16];
+        Span<byte> maskBLanes = stackalloc byte[16];
+        WriteVector128(aLanes, a);
+        WriteVector128(bLanes, b);
+        WriteVector128(maskALanes, maskA);
+        WriteVector128(maskBLanes, maskB);
         Span<byte> result = stackalloc byte[16];
         for (var i = 0; i < 16; i++)
         {
             byte lane = 0;
-            var selectA = maskA.GetElement(i);
+            var selectA = maskALanes[i];
             if ((selectA & 0x80) == 0)
-                lane = a.GetElement(selectA);
+                lane = aLanes[selectA];
 
-            var selectB = maskB.GetElement(i);
+            var selectB = maskBLanes[i];
             if ((selectB & 0x80) == 0)
-                lane = b.GetElement(selectB);
+                lane = bLanes[selectB];
 
             result[i] = lane;
         }
 
-        return Vector128.Create(
-            result[0], result[1], result[2], result[3],
-            result[4], result[5], result[6], result[7],
-            result[8], result[9], result[10], result[11],
-            result[12], result[13], result[14], result[15]);
+        return ReadVector128(result);
     }
     /// <summary>i8x16 swizzle (select lanes of a by indices in b, 0-15; out-of-range → 0).</summary>
     public static Vector128<byte> Int8x16Swizzle(Vector128<byte> a, Vector128<byte> b)
@@ -394,18 +411,18 @@ public static class V128Helper
             return Ssse3.Shuffle(a, mask);
         }
 
+        Span<byte> lanes = stackalloc byte[16];
+        Span<byte> indices = stackalloc byte[16];
+        WriteVector128(lanes, a);
+        WriteVector128(indices, b);
         Span<byte> result = stackalloc byte[16];
         for (var i = 0; i < 16; i++)
         {
-            var idx = b.GetElement(i);
-            result[i] = idx < 16 ? a.GetElement(idx) : (byte)0;
+            var idx = indices[i];
+            result[i] = idx < 16 ? lanes[idx] : (byte)0;
         }
 
-        return Vector128.Create(
-            result[0], result[1], result[2], result[3],
-            result[4], result[5], result[6], result[7],
-            result[8], result[9], result[10], result[11],
-            result[12], result[13], result[14], result[15]);
+        return ReadVector128(result);
     }
 
     /// <summary>Splat i32 to all i8x16 lanes.</summary>
@@ -422,35 +439,111 @@ public static class V128Helper
     public static Vector128<byte> Float64x2Splat(double x) => Vector128.Create(x).AsByte();
 
     /// <summary>Extract signed i8 lane as i32.</summary>
-    public static int Int8x16ExtractLaneS(Vector128<byte> v, int lane) => (sbyte)v.GetElement(lane);
+    public static int Int8x16ExtractLaneS(Vector128<byte> v, int lane)
+    {
+        Span<sbyte> lanes = stackalloc sbyte[16];
+        WriteVector128(lanes, v.AsSByte());
+        return lanes[lane];
+    }
     /// <summary>Extract unsigned i8 lane as i32.</summary>
-    public static int Int8x16ExtractLaneU(Vector128<byte> v, int lane) => v.GetElement(lane);
+    public static int Int8x16ExtractLaneU(Vector128<byte> v, int lane)
+    {
+        Span<byte> lanes = stackalloc byte[16];
+        WriteVector128(lanes, v);
+        return lanes[lane];
+    }
     /// <summary>Extract signed i16 lane as i32.</summary>
-    public static int Int16x8ExtractLaneS(Vector128<byte> v, int lane) => v.AsInt16().GetElement(lane);
+    public static int Int16x8ExtractLaneS(Vector128<byte> v, int lane)
+    {
+        Span<short> lanes = stackalloc short[8];
+        WriteVector128(lanes, v.AsInt16());
+        return lanes[lane];
+    }
     /// <summary>Extract unsigned i16 lane as i32.</summary>
-    public static int Int16x8ExtractLaneU(Vector128<byte> v, int lane) => v.AsUInt16().GetElement(lane);
+    public static int Int16x8ExtractLaneU(Vector128<byte> v, int lane)
+    {
+        Span<ushort> lanes = stackalloc ushort[8];
+        WriteVector128(lanes, v.AsUInt16());
+        return lanes[lane];
+    }
     /// <summary>Extract i32 lane.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Int32x4ExtractLane(Vector128<byte> v, int lane) => v.AsInt32().GetElement(lane);
+    public static int Int32x4ExtractLane(Vector128<byte> v, int lane)
+    {
+        Span<int> lanes = stackalloc int[4];
+        WriteVector128(lanes, v.AsInt32());
+        return lanes[lane];
+    }
     /// <summary>Extract i64 lane.</summary>
-    public static long Int64x2ExtractLane(Vector128<byte> v, int lane) => v.AsInt64().GetElement(lane);
+    public static long Int64x2ExtractLane(Vector128<byte> v, int lane)
+    {
+        Span<long> lanes = stackalloc long[2];
+        WriteVector128(lanes, v.AsInt64());
+        return lanes[lane];
+    }
     /// <summary>Extract f32 lane.</summary>
-    public static float Float32x4ExtractLane(Vector128<byte> v, int lane) => v.AsSingle().GetElement(lane);
+    public static float Float32x4ExtractLane(Vector128<byte> v, int lane)
+    {
+        Span<float> lanes = stackalloc float[4];
+        WriteVector128(lanes, v.AsSingle());
+        return lanes[lane];
+    }
     /// <summary>Extract f64 lane.</summary>
-    public static double Float64x2ExtractLane(Vector128<byte> v, int lane) => v.AsDouble().GetElement(lane);
+    public static double Float64x2ExtractLane(Vector128<byte> v, int lane)
+    {
+        Span<double> lanes = stackalloc double[2];
+        WriteVector128(lanes, v.AsDouble());
+        return lanes[lane];
+    }
 
     /// <summary>Replace i8x16 lane with low byte of i32.</summary>
-    public static Vector128<byte> Int8x16ReplaceLane(Vector128<byte> v, int lane, int x) => v.WithElement(lane, (byte)(x & 0xFF));
+    public static Vector128<byte> Int8x16ReplaceLane(Vector128<byte> v, int lane, int x)
+    {
+        Span<byte> lanes = stackalloc byte[16];
+        WriteVector128(lanes, v);
+        lanes[lane] = (byte)(x & 0xFF);
+        return ReadVector128(lanes);
+    }
     /// <summary>Replace i16x8 lane with low 16 bits of i32.</summary>
-    public static Vector128<byte> Int16x8ReplaceLane(Vector128<byte> v, int lane, int x) => v.AsInt16().WithElement(lane, (short)(x & 0xFFFF)).AsByte();
+    public static Vector128<byte> Int16x8ReplaceLane(Vector128<byte> v, int lane, int x)
+    {
+        Span<short> lanes = stackalloc short[8];
+        WriteVector128(lanes, v.AsInt16());
+        lanes[lane] = (short)(x & 0xFFFF);
+        return ReadVector128(lanes).AsByte();
+    }
     /// <summary>Replace i32x4 lane.</summary>
-    public static Vector128<byte> Int32x4ReplaceLane(Vector128<byte> v, int lane, int x) => v.AsInt32().WithElement(lane, x).AsByte();
+    public static Vector128<byte> Int32x4ReplaceLane(Vector128<byte> v, int lane, int x)
+    {
+        Span<int> lanes = stackalloc int[4];
+        WriteVector128(lanes, v.AsInt32());
+        lanes[lane] = x;
+        return ReadVector128(lanes).AsByte();
+    }
     /// <summary>Replace i64x2 lane.</summary>
-    public static Vector128<byte> Int64x2ReplaceLane(Vector128<byte> v, int lane, long x) => v.AsInt64().WithElement(lane, x).AsByte();
+    public static Vector128<byte> Int64x2ReplaceLane(Vector128<byte> v, int lane, long x)
+    {
+        Span<long> lanes = stackalloc long[2];
+        WriteVector128(lanes, v.AsInt64());
+        lanes[lane] = x;
+        return ReadVector128(lanes).AsByte();
+    }
     /// <summary>Replace f32x4 lane.</summary>
-    public static Vector128<byte> Float32x4ReplaceLane(Vector128<byte> v, int lane, float x) => v.AsSingle().WithElement(lane, x).AsByte();
+    public static Vector128<byte> Float32x4ReplaceLane(Vector128<byte> v, int lane, float x)
+    {
+        Span<float> lanes = stackalloc float[4];
+        WriteVector128(lanes, v.AsSingle());
+        lanes[lane] = x;
+        return ReadVector128(lanes).AsByte();
+    }
     /// <summary>Replace f64x2 lane.</summary>
-    public static Vector128<byte> Float64x2ReplaceLane(Vector128<byte> v, int lane, double x) => v.AsDouble().WithElement(lane, x).AsByte();
+    public static Vector128<byte> Float64x2ReplaceLane(Vector128<byte> v, int lane, double x)
+    {
+        Span<double> lanes = stackalloc double[2];
+        WriteVector128(lanes, v.AsDouble());
+        lanes[lane] = x;
+        return ReadVector128(lanes).AsByte();
+    }
 
     /// <summary>i8x16 absolute value.</summary>
     public static Vector128<byte> Int8x16Abs(Vector128<byte> a) => Vector128.Abs(a.AsSByte()).AsByte();
@@ -463,30 +556,46 @@ public static class V128Helper
     /// <summary>i8x16 signed saturating add.</summary>
     public static Vector128<byte> Int8x16AddSatS(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new sbyte[16];
-        for (var i = 0; i < 16; i++) { var v = a.AsSByte().GetElement(i) + b.AsSByte().GetElement(i); r[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
-        return Vector128.Create(r).AsByte();
+        Span<sbyte> left = stackalloc sbyte[16];
+        Span<sbyte> right = stackalloc sbyte[16];
+        Span<sbyte> result = stackalloc sbyte[16];
+        WriteVector128(left, a.AsSByte());
+        WriteVector128(right, b.AsSByte());
+        for (var i = 0; i < 16; i++) { var v = left[i] + right[i]; result[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i8x16 unsigned saturating add.</summary>
     public static Vector128<byte> Int8x16AddSatU(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) { var v = a.GetElement(i) + b.GetElement(i); r[i] = v > 255 ? (byte)255 : (byte)v; }
-        return Vector128.Create(r);
+        Span<byte> left = stackalloc byte[16];
+        Span<byte> right = stackalloc byte[16];
+        Span<byte> result = stackalloc byte[16];
+        WriteVector128(left, a);
+        WriteVector128(right, b);
+        for (var i = 0; i < 16; i++) { var v = left[i] + right[i]; result[i] = v > 255 ? (byte)255 : (byte)v; }
+        return ReadVector128(result);
     }
     /// <summary>i8x16 signed saturating subtract.</summary>
     public static Vector128<byte> Int8x16SubSatS(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new sbyte[16];
-        for (var i = 0; i < 16; i++) { var v = a.AsSByte().GetElement(i) - b.AsSByte().GetElement(i); r[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
-        return Vector128.Create(r).AsByte();
+        Span<sbyte> left = stackalloc sbyte[16];
+        Span<sbyte> right = stackalloc sbyte[16];
+        Span<sbyte> result = stackalloc sbyte[16];
+        WriteVector128(left, a.AsSByte());
+        WriteVector128(right, b.AsSByte());
+        for (var i = 0; i < 16; i++) { var v = left[i] - right[i]; result[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i8x16 unsigned saturating subtract.</summary>
     public static Vector128<byte> Int8x16SubSatU(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) { var x = a.GetElement(i); var y = b.GetElement(i); r[i] = x < y ? (byte)0 : (byte)(x - y); }
-        return Vector128.Create(r);
+        Span<byte> left = stackalloc byte[16];
+        Span<byte> right = stackalloc byte[16];
+        Span<byte> result = stackalloc byte[16];
+        WriteVector128(left, a);
+        WriteVector128(right, b);
+        for (var i = 0; i < 16; i++) { var x = left[i]; var y = right[i]; result[i] = x < y ? (byte)0 : (byte)(x - y); }
+        return ReadVector128(result);
     }
     /// <summary>i8x16 signed min.</summary>
     public static Vector128<byte> Int8x16MinS(Vector128<byte> a, Vector128<byte> b) => Vector128.Min(a.AsSByte(), b.AsSByte()).AsByte();
@@ -510,30 +619,46 @@ public static class V128Helper
     /// <summary>i16x8 signed saturating add.</summary>
     public static Vector128<byte> Int16x8AddSatS(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new short[8];
-        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i) + b.AsInt16().GetElement(i); r[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
-        return Vector128.Create(r).AsByte();
+        Span<short> left = stackalloc short[8];
+        Span<short> right = stackalloc short[8];
+        Span<short> result = stackalloc short[8];
+        WriteVector128(left, a.AsInt16());
+        WriteVector128(right, b.AsInt16());
+        for (var i = 0; i < 8; i++) { var v = left[i] + right[i]; result[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i16x8 unsigned saturating add.</summary>
     public static Vector128<byte> Int16x8AddSatU(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new ushort[8];
-        for (var i = 0; i < 8; i++) { var v = a.AsUInt16().GetElement(i) + b.AsUInt16().GetElement(i); r[i] = v > 65535u ? (ushort)65535 : (ushort)v; }
-        return Vector128.Create(r).AsByte();
+        Span<ushort> left = stackalloc ushort[8];
+        Span<ushort> right = stackalloc ushort[8];
+        Span<ushort> result = stackalloc ushort[8];
+        WriteVector128(left, a.AsUInt16());
+        WriteVector128(right, b.AsUInt16());
+        for (var i = 0; i < 8; i++) { var v = left[i] + right[i]; result[i] = v > 65535u ? (ushort)65535 : (ushort)v; }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i16x8 signed saturating subtract.</summary>
     public static Vector128<byte> Int16x8SubSatS(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new short[8];
-        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i) - b.AsInt16().GetElement(i); r[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
-        return Vector128.Create(r).AsByte();
+        Span<short> left = stackalloc short[8];
+        Span<short> right = stackalloc short[8];
+        Span<short> result = stackalloc short[8];
+        WriteVector128(left, a.AsInt16());
+        WriteVector128(right, b.AsInt16());
+        for (var i = 0; i < 8; i++) { var v = left[i] - right[i]; result[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i16x8 unsigned saturating subtract.</summary>
     public static Vector128<byte> Int16x8SubSatU(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new ushort[8];
-        for (var i = 0; i < 8; i++) { var x = a.AsUInt16().GetElement(i); var y = b.AsUInt16().GetElement(i); r[i] = x < y ? (ushort)0 : (ushort)(x - y); }
-        return Vector128.Create(r).AsByte();
+        Span<ushort> left = stackalloc ushort[8];
+        Span<ushort> right = stackalloc ushort[8];
+        Span<ushort> result = stackalloc ushort[8];
+        WriteVector128(left, a.AsUInt16());
+        WriteVector128(right, b.AsUInt16());
+        for (var i = 0; i < 8; i++) { var x = left[i]; var y = right[i]; result[i] = x < y ? (ushort)0 : (ushort)(x - y); }
+        return ReadVector128(result).AsByte();
     }
     /// <summary>i16x8 signed min.</summary>
     public static Vector128<byte> Int16x8MinS(Vector128<byte> a, Vector128<byte> b) => Vector128.Min(a.AsInt16(), b.AsInt16()).AsByte();
@@ -589,16 +714,18 @@ public static class V128Helper
     /// <summary>f32x4 truncate toward zero.</summary>
     public static Vector128<byte> Float32x4Trunc(Vector128<byte> a)
     {
-        var r = new float[4];
-        for (var i = 0; i < 4; i++) r[i] = MathF.Truncate(a.AsSingle().GetElement(i));
-        return Vector128.Create(r).AsByte();
+        Span<float> values = stackalloc float[4];
+        WriteVector128(values, a.AsSingle());
+        for (var i = 0; i < 4; i++) values[i] = MathF.Truncate(values[i]);
+        return ReadVector128(values).AsByte();
     }
     /// <summary>f32x4 round to nearest even.</summary>
     public static Vector128<byte> Float32x4Nearest(Vector128<byte> a)
     {
-        var r = new float[4];
-        for (var i = 0; i < 4; i++) r[i] = MathF.Round(a.AsSingle().GetElement(i), MidpointRounding.ToEven);
-        return Vector128.Create(r).AsByte();
+        Span<float> values = stackalloc float[4];
+        WriteVector128(values, a.AsSingle());
+        for (var i = 0; i < 4; i++) values[i] = MathF.Round(values[i], MidpointRounding.ToEven);
+        return ReadVector128(values).AsByte();
     }
     /// <summary>f32x4 add.</summary>
     public static Vector128<byte> Float32x4Add(Vector128<byte> a, Vector128<byte> b) => (a.AsSingle() + b.AsSingle()).AsByte();
@@ -614,18 +741,21 @@ public static class V128Helper
 #if NET9_0_OR_GREATER
         return Vector128.Min(a.AsSingle(), b.AsSingle()).AsByte();
 #else
-        var r = new float[4];
-        var sa = a.AsSingle(); var sb = b.AsSingle();
+        Span<float> left = stackalloc float[4];
+        Span<float> right = stackalloc float[4];
+        Span<float> result = stackalloc float[4];
+        WriteVector128(left, a.AsSingle());
+        WriteVector128(right, b.AsSingle());
         for (var i = 0; i < 4; i++)
         {
-            var ai = sa.GetElement(i); var bi = sb.GetElement(i);
+            var ai = left[i]; var bi = right[i];
             float ri;
             if (float.IsNaN(ai) || float.IsNaN(bi)) ri = float.NaN;
             else if (ai == 0 && bi == 0) ri = FloatHelper.UInt32BitsToFloat(FloatHelper.FloatToUInt32Bits(ai) | FloatHelper.FloatToUInt32Bits(bi));
             else ri = ai < bi ? ai : bi;
-            r[i] = ri;
+            result[i] = ri;
         }
-        return Vector128.Create(r).AsByte();
+        return ReadVector128(result).AsByte();
 #endif
     }
     /// <summary>f32x4 IEEE max (propagates NaN, returns +0 over -0).</summary>
@@ -634,33 +764,44 @@ public static class V128Helper
 #if NET9_0_OR_GREATER
         return Vector128.Max(a.AsSingle(), b.AsSingle()).AsByte();
 #else
-        var r = new float[4];
-        var sa = a.AsSingle(); var sb = b.AsSingle();
+        Span<float> left = stackalloc float[4];
+        Span<float> right = stackalloc float[4];
+        Span<float> result = stackalloc float[4];
+        WriteVector128(left, a.AsSingle());
+        WriteVector128(right, b.AsSingle());
         for (var i = 0; i < 4; i++)
         {
-            var ai = sa.GetElement(i); var bi = sb.GetElement(i);
+            var ai = left[i]; var bi = right[i];
             float ri;
             if (float.IsNaN(ai) || float.IsNaN(bi)) ri = float.NaN;
             else if (ai == 0 && bi == 0) ri = FloatHelper.UInt32BitsToFloat(FloatHelper.FloatToUInt32Bits(ai) & FloatHelper.FloatToUInt32Bits(bi));
             else ri = ai > bi ? ai : bi;
-            r[i] = ri;
+            result[i] = ri;
         }
-        return Vector128.Create(r).AsByte();
+        return ReadVector128(result).AsByte();
 #endif
     }
     /// <summary>f32x4 pseudo-min (returns b if b &lt; a, else a).</summary>
     public static Vector128<byte> Float32x4Pmin(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new float[4];
-        for (var i = 0; i < 4; i++) { var ai = a.AsSingle().GetElement(i); var bi = b.AsSingle().GetElement(i); r[i] = bi < ai ? bi : ai; }
-        return Vector128.Create(r).AsByte();
+        Span<float> left = stackalloc float[4];
+        Span<float> right = stackalloc float[4];
+        Span<float> result = stackalloc float[4];
+        WriteVector128(left, a.AsSingle());
+        WriteVector128(right, b.AsSingle());
+        for (var i = 0; i < 4; i++) result[i] = right[i] < left[i] ? right[i] : left[i];
+        return ReadVector128(result).AsByte();
     }
     /// <summary>f32x4 pseudo-max (returns b if b &gt; a, else a).</summary>
     public static Vector128<byte> Float32x4Pmax(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new float[4];
-        for (var i = 0; i < 4; i++) { var ai = a.AsSingle().GetElement(i); var bi = b.AsSingle().GetElement(i); r[i] = bi > ai ? bi : ai; }
-        return Vector128.Create(r).AsByte();
+        Span<float> left = stackalloc float[4];
+        Span<float> right = stackalloc float[4];
+        Span<float> result = stackalloc float[4];
+        WriteVector128(left, a.AsSingle());
+        WriteVector128(right, b.AsSingle());
+        for (var i = 0; i < 4; i++) result[i] = right[i] > left[i] ? right[i] : left[i];
+        return ReadVector128(result).AsByte();
     }
 
     /// <summary>f64x2 absolute value.</summary>
@@ -676,16 +817,18 @@ public static class V128Helper
     /// <summary>f64x2 truncate toward zero.</summary>
     public static Vector128<byte> Float64x2Trunc(Vector128<byte> a)
     {
-        var r = new double[2];
-        for (var i = 0; i < 2; i++) r[i] = Math.Truncate(a.AsDouble().GetElement(i));
-        return Vector128.Create(r).AsByte();
+        Span<double> values = stackalloc double[2];
+        WriteVector128(values, a.AsDouble());
+        for (var i = 0; i < 2; i++) values[i] = Math.Truncate(values[i]);
+        return ReadVector128(values).AsByte();
     }
     /// <summary>f64x2 round to nearest even.</summary>
     public static Vector128<byte> Float64x2Nearest(Vector128<byte> a)
     {
-        var r = new double[2];
-        for (var i = 0; i < 2; i++) r[i] = Math.Round(a.AsDouble().GetElement(i), MidpointRounding.ToEven);
-        return Vector128.Create(r).AsByte();
+        Span<double> values = stackalloc double[2];
+        WriteVector128(values, a.AsDouble());
+        for (var i = 0; i < 2; i++) values[i] = Math.Round(values[i], MidpointRounding.ToEven);
+        return ReadVector128(values).AsByte();
     }
     /// <summary>f64x2 add.</summary>
     public static Vector128<byte> Float64x2Add(Vector128<byte> a, Vector128<byte> b) => (a.AsDouble() + b.AsDouble()).AsByte();
@@ -701,18 +844,21 @@ public static class V128Helper
 #if NET9_0_OR_GREATER
         return Vector128.Min(a.AsDouble(), b.AsDouble()).AsByte();
 #else
-        var r = new double[2];
-        var sa = a.AsDouble(); var sb = b.AsDouble();
+        Span<double> left = stackalloc double[2];
+        Span<double> right = stackalloc double[2];
+        Span<double> result = stackalloc double[2];
+        WriteVector128(left, a.AsDouble());
+        WriteVector128(right, b.AsDouble());
         for (var i = 0; i < 2; i++)
         {
-            var ai = sa.GetElement(i); var bi = sb.GetElement(i);
+            var ai = left[i]; var bi = right[i];
             double ri;
             if (double.IsNaN(ai) || double.IsNaN(bi)) ri = double.NaN;
             else if (ai == 0 && bi == 0) ri = FloatHelper.UInt64BitsToDouble(FloatHelper.DoubleToUInt64Bits(ai) | FloatHelper.DoubleToUInt64Bits(bi));
             else ri = ai < bi ? ai : bi;
-            r[i] = ri;
+            result[i] = ri;
         }
-        return Vector128.Create(r).AsByte();
+        return ReadVector128(result).AsByte();
 #endif
     }
     /// <summary>f64x2 IEEE max (propagates NaN, returns +0 over -0).</summary>
@@ -721,33 +867,44 @@ public static class V128Helper
 #if NET9_0_OR_GREATER
         return Vector128.Max(a.AsDouble(), b.AsDouble()).AsByte();
 #else
-        var r = new double[2];
-        var sa = a.AsDouble(); var sb = b.AsDouble();
+        Span<double> left = stackalloc double[2];
+        Span<double> right = stackalloc double[2];
+        Span<double> result = stackalloc double[2];
+        WriteVector128(left, a.AsDouble());
+        WriteVector128(right, b.AsDouble());
         for (var i = 0; i < 2; i++)
         {
-            var ai = sa.GetElement(i); var bi = sb.GetElement(i);
+            var ai = left[i]; var bi = right[i];
             double ri;
             if (double.IsNaN(ai) || double.IsNaN(bi)) ri = double.NaN;
             else if (ai == 0 && bi == 0) ri = FloatHelper.UInt64BitsToDouble(FloatHelper.DoubleToUInt64Bits(ai) & FloatHelper.DoubleToUInt64Bits(bi));
             else ri = ai > bi ? ai : bi;
-            r[i] = ri;
+            result[i] = ri;
         }
-        return Vector128.Create(r).AsByte();
+        return ReadVector128(result).AsByte();
 #endif
     }
     /// <summary>f64x2 pseudo-min (returns b if b &lt; a, else a).</summary>
     public static Vector128<byte> Float64x2Pmin(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new double[2];
-        for (var i = 0; i < 2; i++) { var ai = a.AsDouble().GetElement(i); var bi = b.AsDouble().GetElement(i); r[i] = bi < ai ? bi : ai; }
-        return Vector128.Create(r).AsByte();
+        Span<double> left = stackalloc double[2];
+        Span<double> right = stackalloc double[2];
+        Span<double> result = stackalloc double[2];
+        WriteVector128(left, a.AsDouble());
+        WriteVector128(right, b.AsDouble());
+        for (var i = 0; i < 2; i++) result[i] = right[i] < left[i] ? right[i] : left[i];
+        return ReadVector128(result).AsByte();
     }
     /// <summary>f64x2 pseudo-max (returns b if b &gt; a, else a).</summary>
     public static Vector128<byte> Float64x2Pmax(Vector128<byte> a, Vector128<byte> b)
     {
-        var r = new double[2];
-        for (var i = 0; i < 2; i++) { var ai = a.AsDouble().GetElement(i); var bi = b.AsDouble().GetElement(i); r[i] = bi > ai ? bi : ai; }
-        return Vector128.Create(r).AsByte();
+        Span<double> left = stackalloc double[2];
+        Span<double> right = stackalloc double[2];
+        Span<double> result = stackalloc double[2];
+        WriteVector128(left, a.AsDouble());
+        WriteVector128(right, b.AsDouble());
+        for (var i = 0; i < 2; i++) result[i] = right[i] > left[i] ? right[i] : left[i];
+        return ReadVector128(result).AsByte();
     }
 
 #pragma warning disable CS1591
@@ -802,9 +959,30 @@ public static class V128Helper
     public static Vector128<byte> Float64x2Ge(Vector128<byte> a, Vector128<byte> b) => Vector128.GreaterThanOrEqual(a.AsDouble(), b.AsDouble()).AsByte();
 
     // --- shifts (NET5+) ---
-    public static Vector128<byte> Int8x16Shl(Vector128<byte> a, int shift) { shift &= 7; var r = new byte[16]; for (var i = 0; i < 16; i++) r[i] = (byte)(a.GetElement(i) << shift); return Vector128.Create(r); }
-    public static Vector128<byte> Int8x16ShrS(Vector128<byte> a, int shift) { shift &= 7; var r = new sbyte[16]; for (var i = 0; i < 16; i++) r[i] = (sbyte)(a.AsSByte().GetElement(i) >> shift); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int8x16ShrU(Vector128<byte> a, int shift) { shift &= 7; var r = new byte[16]; for (var i = 0; i < 16; i++) r[i] = (byte)(a.GetElement(i) >> shift); return Vector128.Create(r); }
+    public static Vector128<byte> Int8x16Shl(Vector128<byte> a, int shift)
+    {
+        shift &= 7;
+        Span<byte> values = stackalloc byte[16];
+        WriteVector128(values, a);
+        for (var i = 0; i < 16; i++) values[i] = (byte)(values[i] << shift);
+        return ReadVector128(values);
+    }
+    public static Vector128<byte> Int8x16ShrS(Vector128<byte> a, int shift)
+    {
+        shift &= 7;
+        Span<sbyte> values = stackalloc sbyte[16];
+        WriteVector128(values, a.AsSByte());
+        for (var i = 0; i < 16; i++) values[i] = (sbyte)(values[i] >> shift);
+        return ReadVector128(values).AsByte();
+    }
+    public static Vector128<byte> Int8x16ShrU(Vector128<byte> a, int shift)
+    {
+        shift &= 7;
+        Span<byte> values = stackalloc byte[16];
+        WriteVector128(values, a);
+        for (var i = 0; i < 16; i++) values[i] = (byte)(values[i] >> shift);
+        return ReadVector128(values);
+    }
     public static Vector128<byte> Int16x8Shl(Vector128<byte> a, int shift) => Vector128.ShiftLeft(a.AsInt16(), shift & 15).AsByte();
     public static Vector128<byte> Int16x8ShrS(Vector128<byte> a, int shift) => Vector128.ShiftRightArithmetic(a.AsInt16(), shift & 15).AsByte();
     public static Vector128<byte> Int16x8ShrU(Vector128<byte> a, int shift) => Vector128.ShiftRightLogical(a.AsUInt16(), shift & 15).AsByte();
@@ -821,15 +999,43 @@ public static class V128Helper
     public static int Int16x8AllTrue(Vector128<byte> a) => Vector128.EqualsAny(a.AsInt16(), Vector128<short>.Zero) ? 0 : 1;
     public static int Int32x4AllTrue(Vector128<byte> a) => Vector128.EqualsAny(a.AsInt32(), Vector128<int>.Zero) ? 0 : 1;
     public static int Int64x2AllTrue(Vector128<byte> a) => Vector128.EqualsAny(a.AsInt64(), Vector128<long>.Zero) ? 0 : 1;
-    public static int Int8x16Bitmask(Vector128<byte> a) { var r = 0; for (var i = 0; i < 16; i++) if ((a.GetElement(i) >> 7) != 0) r |= 1 << i; return r; }
-    public static int Int16x8Bitmask(Vector128<byte> a) { var r = 0; for (var i = 0; i < 8; i++) if ((a.AsUInt16().GetElement(i) >> 15) != 0) r |= 1 << i; return r; }
-    public static int Int32x4Bitmask(Vector128<byte> a) { var r = 0; for (var i = 0; i < 4; i++) if (((uint)a.AsInt32().GetElement(i) >> 31) != 0) r |= 1 << i; return r; }
-    public static int Int64x2Bitmask(Vector128<byte> a) { var r = 0; for (var i = 0; i < 2; i++) if (((ulong)a.AsInt64().GetElement(i) >> 63) != 0) r |= 1 << i; return r; }
+    public static int Int8x16Bitmask(Vector128<byte> a)
+    {
+        var result = 0;
+        Span<byte> lanes = stackalloc byte[16];
+        WriteVector128(lanes, a);
+        for (var i = 0; i < 16; i++) if ((lanes[i] >> 7) != 0) result |= 1 << i;
+        return result;
+    }
+    public static int Int16x8Bitmask(Vector128<byte> a)
+    {
+        var result = 0;
+        Span<ushort> lanes = stackalloc ushort[8];
+        WriteVector128(lanes, a.AsUInt16());
+        for (var i = 0; i < 8; i++) if ((lanes[i] >> 15) != 0) result |= 1 << i;
+        return result;
+    }
+    public static int Int32x4Bitmask(Vector128<byte> a)
+    {
+        var result = 0;
+        Span<uint> lanes = stackalloc uint[4];
+        WriteVector128(lanes, a.AsUInt32());
+        for (var i = 0; i < 4; i++) if ((lanes[i] >> 31) != 0) result |= 1 << i;
+        return result;
+    }
+    public static int Int64x2Bitmask(Vector128<byte> a)
+    {
+        var result = 0;
+        Span<ulong> lanes = stackalloc ulong[2];
+        WriteVector128(lanes, a.AsUInt64());
+        for (var i = 0; i < 2; i++) if ((lanes[i] >> 63) != 0) result |= 1 << i;
+        return result;
+    }
 
     // --- misc unary (NET5+) ---
-    public static Vector128<byte> Int8x16Popcnt(Vector128<byte> a) { var r = new byte[16]; for (var i = 0; i < 16; i++) r[i] = (byte)System.Numerics.BitOperations.PopCount(a.GetElement(i)); return Vector128.Create(r); }
-    public static Vector128<byte> Int8x16AvgrU(Vector128<byte> a, Vector128<byte> b) { var r = new byte[16]; for (var i = 0; i < 16; i++) r[i] = (byte)((a.GetElement(i) + b.GetElement(i) + 1) >> 1); return Vector128.Create(r); }
-    public static Vector128<byte> Int16x8AvgrU(Vector128<byte> a, Vector128<byte> b) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = (ushort)((a.AsUInt16().GetElement(i) + b.AsUInt16().GetElement(i) + 1) >> 1); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int8x16Popcnt(Vector128<byte> a) { Span<byte> values = stackalloc byte[16]; WriteVector128(values, a); for (var i = 0; i < 16; i++) values[i] = (byte)System.Numerics.BitOperations.PopCount(values[i]); return ReadVector128(values); }
+    public static Vector128<byte> Int8x16AvgrU(Vector128<byte> a, Vector128<byte> b) { Span<byte> left = stackalloc byte[16]; Span<byte> right = stackalloc byte[16]; Span<byte> result = stackalloc byte[16]; WriteVector128(left, a); WriteVector128(right, b); for (var i = 0; i < 16; i++) result[i] = (byte)((left[i] + right[i] + 1) >> 1); return ReadVector128(result); }
+    public static Vector128<byte> Int16x8AvgrU(Vector128<byte> a, Vector128<byte> b) { Span<ushort> left = stackalloc ushort[8]; Span<ushort> right = stackalloc ushort[8]; Span<ushort> result = stackalloc ushort[8]; WriteVector128(left, a.AsUInt16()); WriteVector128(right, b.AsUInt16()); for (var i = 0; i < 8; i++) result[i] = (ushort)((left[i] + right[i] + 1) >> 1); return ReadVector128(result).AsByte(); }
 
     // --- narrow (NET5+) ---
     public static Vector128<byte> Int8x16NarrowI16x8S(Vector128<byte> a, Vector128<byte> b)
@@ -837,44 +1043,56 @@ public static class V128Helper
         if (Sse2.IsSupported)
             return Sse2.PackSignedSaturate(a.AsInt16(), b.AsInt16()).AsByte();
 
-        Span<sbyte> r = stackalloc sbyte[16];
-        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
-        for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8 + i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
-        return Vector128.Create(
-            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
-            r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]).AsByte();
+        Span<short> left = stackalloc short[8];
+        Span<short> right = stackalloc short[8];
+        Span<sbyte> result = stackalloc sbyte[16];
+        WriteVector128(left, a.AsInt16());
+        WriteVector128(right, b.AsInt16());
+        for (var i = 0; i < 8; i++) { var v = left[i]; result[i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        for (var i = 0; i < 8; i++) { var v = right[i]; result[8 + i] = v < -128 ? (sbyte)-128 : v > 127 ? (sbyte)127 : (sbyte)v; }
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int8x16NarrowI16x8U(Vector128<byte> a, Vector128<byte> b)
     {
         if (Sse2.IsSupported)
             return Sse2.PackUnsignedSaturate(a.AsInt16(), b.AsInt16());
 
-        Span<byte> r = stackalloc byte[16];
-        for (var i = 0; i < 8; i++) { var v = a.AsInt16().GetElement(i); r[i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
-        for (var i = 0; i < 8; i++) { var v = b.AsInt16().GetElement(i); r[8 + i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
-        return Vector128.Create(
-            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
-            r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]);
+        Span<short> left = stackalloc short[8];
+        Span<short> right = stackalloc short[8];
+        Span<byte> result = stackalloc byte[16];
+        WriteVector128(left, a.AsInt16());
+        WriteVector128(right, b.AsInt16());
+        for (var i = 0; i < 8; i++) { var v = left[i]; result[i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
+        for (var i = 0; i < 8; i++) { var v = right[i]; result[8 + i] = v < 0 ? (byte)0 : v > 255 ? (byte)255 : (byte)v; }
+        return ReadVector128(result);
     }
     public static Vector128<byte> Int16x8NarrowI32x4S(Vector128<byte> a, Vector128<byte> b)
     {
         if (Sse2.IsSupported)
             return Sse2.PackSignedSaturate(a.AsInt32(), b.AsInt32()).AsByte();
 
-        Span<short> r = stackalloc short[8];
-        for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
-        for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4 + i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<int> left = stackalloc int[4];
+        Span<int> right = stackalloc int[4];
+        Span<short> result = stackalloc short[8];
+        WriteVector128(left, a.AsInt32());
+        WriteVector128(right, b.AsInt32());
+        for (var i = 0; i < 4; i++) { var v = left[i]; result[i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        for (var i = 0; i < 4; i++) { var v = right[i]; result[4 + i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int16x8NarrowI32x4U(Vector128<byte> a, Vector128<byte> b)
     {
         if (Sse41.IsSupported)
             return Sse41.PackUnsignedSaturate(a.AsInt32(), b.AsInt32()).AsByte();
 
-        Span<ushort> r = stackalloc ushort[8];
-        for (var i = 0; i < 4; i++) { var v = a.AsInt32().GetElement(i); r[i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
-        for (var i = 0; i < 4; i++) { var v = b.AsInt32().GetElement(i); r[4 + i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<int> left = stackalloc int[4];
+        Span<int> right = stackalloc int[4];
+        Span<ushort> result = stackalloc ushort[8];
+        WriteVector128(left, a.AsInt32());
+        WriteVector128(right, b.AsInt32());
+        for (var i = 0; i < 4; i++) { var v = left[i]; result[i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
+        for (var i = 0; i < 4; i++) { var v = right[i]; result[4 + i] = v < 0 ? (ushort)0 : v > 65535 ? (ushort)65535 : (ushort)v; }
+        return ReadVector128(result).AsByte();
     }
 
     // --- extend (NET5+) ---
@@ -886,9 +1104,11 @@ public static class V128Helper
             return Sse2.UnpackLow(a, sign).AsByte();
         }
 
-        Span<short> r = stackalloc short[8];
-        for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(i);
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<sbyte> values = stackalloc sbyte[16];
+        Span<short> result = stackalloc short[8];
+        WriteVector128(values, a.AsSByte());
+        for (var i = 0; i < 8; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int16x8ExtHighI8x16S(Vector128<byte> a)
     {
@@ -898,9 +1118,11 @@ public static class V128Helper
             return Sse2.UnpackHigh(a, sign).AsByte();
         }
 
-        Span<short> r = stackalloc short[8];
-        for (var i = 0; i < 8; i++) r[i] = (sbyte)a.GetElement(8 + i);
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<sbyte> values = stackalloc sbyte[16];
+        Span<short> result = stackalloc short[8];
+        WriteVector128(values, a.AsSByte());
+        for (var i = 0; i < 8; i++) result[i] = values[8 + i];
+        return ReadVector128(result).AsByte();
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int16x8ExtLowI8x16U(Vector128<byte> a)
@@ -908,18 +1130,22 @@ public static class V128Helper
         if (Sse2.IsSupported)
             return Sse2.UnpackLow(a, Vector128<byte>.Zero).AsByte();
 
-        Span<ushort> r = stackalloc ushort[8];
-        for (var i = 0; i < 8; i++) r[i] = a.GetElement(i);
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<byte> values = stackalloc byte[16];
+        Span<ushort> result = stackalloc ushort[8];
+        WriteVector128(values, a);
+        for (var i = 0; i < 8; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int16x8ExtHighI8x16U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
             return Sse2.UnpackHigh(a, Vector128<byte>.Zero).AsByte();
 
-        Span<ushort> r = stackalloc ushort[8];
-        for (var i = 0; i < 8; i++) r[i] = a.GetElement(8 + i);
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<byte> values = stackalloc byte[16];
+        Span<ushort> result = stackalloc ushort[8];
+        WriteVector128(values, a);
+        for (var i = 0; i < 8; i++) result[i] = values[8 + i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int32x4ExtLowI16x8S(Vector128<byte> a)
     {
@@ -930,9 +1156,11 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, sign).AsByte();
         }
 
-        Span<int> r = stackalloc int[4];
-        for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i);
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<short> values = stackalloc short[8];
+        Span<int> result = stackalloc int[4];
+        WriteVector128(values, a.AsInt16());
+        for (var i = 0; i < 4; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int32x4ExtHighI16x8S(Vector128<byte> a)
     {
@@ -943,9 +1171,11 @@ public static class V128Helper
             return Sse2.UnpackHigh(lanes, sign).AsByte();
         }
 
-        Span<int> r = stackalloc int[4];
-        for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(4 + i);
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<short> values = stackalloc short[8];
+        Span<int> result = stackalloc int[4];
+        WriteVector128(values, a.AsInt16());
+        for (var i = 0; i < 4; i++) result[i] = values[4 + i];
+        return ReadVector128(result).AsByte();
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4ExtLowI16x8U(Vector128<byte> a)
@@ -953,18 +1183,22 @@ public static class V128Helper
         if (Sse2.IsSupported)
             return Sse2.UnpackLow(a.AsUInt16(), Vector128<ushort>.Zero).AsByte();
 
-        Span<uint> r = stackalloc uint[4];
-        for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(i);
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<ushort> values = stackalloc ushort[8];
+        Span<uint> result = stackalloc uint[4];
+        WriteVector128(values, a.AsUInt16());
+        for (var i = 0; i < 4; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int32x4ExtHighI16x8U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
             return Sse2.UnpackHigh(a.AsUInt16(), Vector128<ushort>.Zero).AsByte();
 
-        Span<uint> r = stackalloc uint[4];
-        for (var i = 0; i < 4; i++) r[i] = a.AsUInt16().GetElement(4 + i);
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<ushort> values = stackalloc ushort[8];
+        Span<uint> result = stackalloc uint[4];
+        WriteVector128(values, a.AsUInt16());
+        for (var i = 0; i < 4; i++) result[i] = values[4 + i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int64x2ExtLowI32x4S(Vector128<byte> a)
     {
@@ -975,9 +1209,11 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, sign).AsByte();
         }
 
-        Span<long> r = stackalloc long[2];
-        for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(i);
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<int> values = stackalloc int[4];
+        Span<long> result = stackalloc long[2];
+        WriteVector128(values, a.AsInt32());
+        for (var i = 0; i < 2; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int64x2ExtHighI32x4S(Vector128<byte> a)
     {
@@ -988,82 +1224,132 @@ public static class V128Helper
             return Sse2.UnpackHigh(lanes, sign).AsByte();
         }
 
-        Span<long> r = stackalloc long[2];
-        for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(2 + i);
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<int> values = stackalloc int[4];
+        Span<long> result = stackalloc long[2];
+        WriteVector128(values, a.AsInt32());
+        for (var i = 0; i < 2; i++) result[i] = values[2 + i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int64x2ExtLowI32x4U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
             return Sse2.UnpackLow(a.AsUInt32(), Vector128<uint>.Zero).AsByte();
 
-        Span<ulong> r = stackalloc ulong[2];
-        for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(i);
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<uint> values = stackalloc uint[4];
+        Span<ulong> result = stackalloc ulong[2];
+        WriteVector128(values, a.AsUInt32());
+        for (var i = 0; i < 2; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static Vector128<byte> Int64x2ExtHighI32x4U(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
             return Sse2.UnpackHigh(a.AsUInt32(), Vector128<uint>.Zero).AsByte();
 
-        Span<ulong> r = stackalloc ulong[2];
-        for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(2 + i);
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<uint> values = stackalloc uint[4];
+        Span<ulong> result = stackalloc ulong[2];
+        WriteVector128(values, a.AsUInt32());
+        for (var i = 0; i < 2; i++) result[i] = values[2 + i];
+        return ReadVector128(result).AsByte();
     }
 
     // --- extmul (NET5+) ---
-    public static Vector128<byte> Int16x8ExtmulLowI8x16S(Vector128<byte> a, Vector128<byte> b) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (short)((sbyte)a.GetElement(i) * (sbyte)b.GetElement(i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtmulHighI8x16S(Vector128<byte> a, Vector128<byte> b) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (short)((sbyte)a.GetElement(8+i) * (sbyte)b.GetElement(8+i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtmulLowI8x16U(Vector128<byte> a, Vector128<byte> b) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = (ushort)(a.GetElement(i) * b.GetElement(i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtmulHighI8x16U(Vector128<byte> a, Vector128<byte> b) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = (ushort)(a.GetElement(8+i) * b.GetElement(8+i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtmulLowI16x8S(Vector128<byte> a, Vector128<byte> b) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i) * b.AsInt16().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtmulHighI16x8S(Vector128<byte> a, Vector128<byte> b) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(4+i) * b.AsInt16().GetElement(4+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtmulLowI16x8U(Vector128<byte> a, Vector128<byte> b) { var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = (uint)(a.AsUInt16().GetElement(i) * b.AsUInt16().GetElement(i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtmulHighI16x8U(Vector128<byte> a, Vector128<byte> b) { var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = (uint)(a.AsUInt16().GetElement(4+i) * b.AsUInt16().GetElement(4+i)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtmulLowI32x4S(Vector128<byte> a, Vector128<byte> b) { var r = new long[2]; for (var i = 0; i < 2; i++) r[i] = (long)a.AsInt32().GetElement(i) * b.AsInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtmulHighI32x4S(Vector128<byte> a, Vector128<byte> b) { var r = new long[2]; for (var i = 0; i < 2; i++) r[i] = (long)a.AsInt32().GetElement(2+i) * b.AsInt32().GetElement(2+i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtmulLowI32x4U(Vector128<byte> a, Vector128<byte> b) { var r = new ulong[2]; for (var i = 0; i < 2; i++) r[i] = (ulong)a.AsUInt32().GetElement(i) * b.AsUInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int64x2ExtmulHighI32x4U(Vector128<byte> a, Vector128<byte> b) { var r = new ulong[2]; for (var i = 0; i < 2; i++) r[i] = (ulong)a.AsUInt32().GetElement(2+i) * b.AsUInt32().GetElement(2+i); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int16x8ExtmulLowI8x16S(Vector128<byte> a, Vector128<byte> b) { Span<sbyte> left = stackalloc sbyte[16]; Span<sbyte> right = stackalloc sbyte[16]; Span<short> result = stackalloc short[8]; WriteVector128(left, a.AsSByte()); WriteVector128(right, b.AsSByte()); for (var i = 0; i < 8; i++) result[i] = (short)(left[i] * right[i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int16x8ExtmulHighI8x16S(Vector128<byte> a, Vector128<byte> b) { Span<sbyte> left = stackalloc sbyte[16]; Span<sbyte> right = stackalloc sbyte[16]; Span<short> result = stackalloc short[8]; WriteVector128(left, a.AsSByte()); WriteVector128(right, b.AsSByte()); for (var i = 0; i < 8; i++) result[i] = (short)(left[8 + i] * right[8 + i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int16x8ExtmulLowI8x16U(Vector128<byte> a, Vector128<byte> b) { Span<byte> left = stackalloc byte[16]; Span<byte> right = stackalloc byte[16]; Span<ushort> result = stackalloc ushort[8]; WriteVector128(left, a); WriteVector128(right, b); for (var i = 0; i < 8; i++) result[i] = (ushort)(left[i] * right[i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int16x8ExtmulHighI8x16U(Vector128<byte> a, Vector128<byte> b) { Span<byte> left = stackalloc byte[16]; Span<byte> right = stackalloc byte[16]; Span<ushort> result = stackalloc ushort[8]; WriteVector128(left, a); WriteVector128(right, b); for (var i = 0; i < 8; i++) result[i] = (ushort)(left[8 + i] * right[8 + i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtmulLowI16x8S(Vector128<byte> a, Vector128<byte> b) { Span<short> left = stackalloc short[8]; Span<short> right = stackalloc short[8]; Span<int> result = stackalloc int[4]; WriteVector128(left, a.AsInt16()); WriteVector128(right, b.AsInt16()); for (var i = 0; i < 4; i++) result[i] = left[i] * right[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtmulHighI16x8S(Vector128<byte> a, Vector128<byte> b) { Span<short> left = stackalloc short[8]; Span<short> right = stackalloc short[8]; Span<int> result = stackalloc int[4]; WriteVector128(left, a.AsInt16()); WriteVector128(right, b.AsInt16()); for (var i = 0; i < 4; i++) result[i] = left[4 + i] * right[4 + i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtmulLowI16x8U(Vector128<byte> a, Vector128<byte> b) { Span<ushort> left = stackalloc ushort[8]; Span<ushort> right = stackalloc ushort[8]; Span<uint> result = stackalloc uint[4]; WriteVector128(left, a.AsUInt16()); WriteVector128(right, b.AsUInt16()); for (var i = 0; i < 4; i++) result[i] = (uint)(left[i] * right[i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtmulHighI16x8U(Vector128<byte> a, Vector128<byte> b) { Span<ushort> left = stackalloc ushort[8]; Span<ushort> right = stackalloc ushort[8]; Span<uint> result = stackalloc uint[4]; WriteVector128(left, a.AsUInt16()); WriteVector128(right, b.AsUInt16()); for (var i = 0; i < 4; i++) result[i] = (uint)(left[4 + i] * right[4 + i]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int64x2ExtmulLowI32x4S(Vector128<byte> a, Vector128<byte> b) { Span<int> left = stackalloc int[4]; Span<int> right = stackalloc int[4]; Span<long> result = stackalloc long[2]; WriteVector128(left, a.AsInt32()); WriteVector128(right, b.AsInt32()); for (var i = 0; i < 2; i++) result[i] = (long)left[i] * right[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int64x2ExtmulHighI32x4S(Vector128<byte> a, Vector128<byte> b) { Span<int> left = stackalloc int[4]; Span<int> right = stackalloc int[4]; Span<long> result = stackalloc long[2]; WriteVector128(left, a.AsInt32()); WriteVector128(right, b.AsInt32()); for (var i = 0; i < 2; i++) result[i] = (long)left[2 + i] * right[2 + i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int64x2ExtmulLowI32x4U(Vector128<byte> a, Vector128<byte> b) { Span<uint> left = stackalloc uint[4]; Span<uint> right = stackalloc uint[4]; Span<ulong> result = stackalloc ulong[2]; WriteVector128(left, a.AsUInt32()); WriteVector128(right, b.AsUInt32()); for (var i = 0; i < 2; i++) result[i] = (ulong)left[i] * right[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int64x2ExtmulHighI32x4U(Vector128<byte> a, Vector128<byte> b) { Span<uint> left = stackalloc uint[4]; Span<uint> right = stackalloc uint[4]; Span<ulong> result = stackalloc ulong[2]; WriteVector128(left, a.AsUInt32()); WriteVector128(right, b.AsUInt32()); for (var i = 0; i < 2; i++) result[i] = (ulong)left[2 + i] * right[2 + i]; return ReadVector128(result).AsByte(); }
 
     // --- extadd pairwise (NET5+) ---
-    public static Vector128<byte> Int16x8ExtaddPairwiseI8x16S(Vector128<byte> a) { var r = new short[8]; for (var i = 0; i < 8; i++) r[i] = (short)((sbyte)a.GetElement(i*2) + (sbyte)a.GetElement(i*2+1)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int16x8ExtaddPairwiseI8x16U(Vector128<byte> a) { var r = new ushort[8]; for (var i = 0; i < 8; i++) r[i] = (ushort)(a.GetElement(i*2) + a.GetElement(i*2+1)); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtaddPairwiseI16x8S(Vector128<byte> a) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i*2) + a.AsInt16().GetElement(i*2+1); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4ExtaddPairwiseI16x8U(Vector128<byte> a) { var r = new uint[4]; for (var i = 0; i < 4; i++) r[i] = (uint)(a.AsUInt16().GetElement(i*2) + a.AsUInt16().GetElement(i*2+1)); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int16x8ExtaddPairwiseI8x16S(Vector128<byte> a) { Span<sbyte> values = stackalloc sbyte[16]; Span<short> result = stackalloc short[8]; WriteVector128(values, a.AsSByte()); for (var i = 0; i < 8; i++) result[i] = (short)(values[i * 2] + values[i * 2 + 1]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int16x8ExtaddPairwiseI8x16U(Vector128<byte> a) { Span<byte> values = stackalloc byte[16]; Span<ushort> result = stackalloc ushort[8]; WriteVector128(values, a); for (var i = 0; i < 8; i++) result[i] = (ushort)(values[i * 2] + values[i * 2 + 1]); return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtaddPairwiseI16x8S(Vector128<byte> a) { Span<short> values = stackalloc short[8]; Span<int> result = stackalloc int[4]; WriteVector128(values, a.AsInt16()); for (var i = 0; i < 4; i++) result[i] = values[i * 2] + values[i * 2 + 1]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4ExtaddPairwiseI16x8U(Vector128<byte> a) { Span<ushort> values = stackalloc ushort[8]; Span<uint> result = stackalloc uint[4]; WriteVector128(values, a.AsUInt16()); for (var i = 0; i < 4; i++) result[i] = (uint)(values[i * 2] + values[i * 2 + 1]); return ReadVector128(result).AsByte(); }
 
     // --- Q15MulrSat / Dot (NET5+) ---
-    public static Vector128<byte> Int16x8Q15MulrSatS(Vector128<byte> a, Vector128<byte> b) { var r = new short[8]; for (var i = 0; i < 8; i++) { var v = ((int)a.AsInt16().GetElement(i) * b.AsInt16().GetElement(i) + 0x4000) >> 15; r[i] = v > 32767 ? (short)32767 : (short)v; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4DotI16x8S(Vector128<byte> a, Vector128<byte> b) { var r = new int[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt16().GetElement(i*2) * b.AsInt16().GetElement(i*2) + a.AsInt16().GetElement(i*2+1) * b.AsInt16().GetElement(i*2+1); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int16x8Q15MulrSatS(Vector128<byte> a, Vector128<byte> b) { Span<short> left = stackalloc short[8]; Span<short> right = stackalloc short[8]; Span<short> result = stackalloc short[8]; WriteVector128(left, a.AsInt16()); WriteVector128(right, b.AsInt16()); for (var i = 0; i < 8; i++) { var v = ((int)left[i] * right[i] + 0x4000) >> 15; result[i] = v > 32767 ? (short)32767 : (short)v; } return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4DotI16x8S(Vector128<byte> a, Vector128<byte> b) { Span<short> left = stackalloc short[8]; Span<short> right = stackalloc short[8]; Span<int> result = stackalloc int[4]; WriteVector128(left, a.AsInt16()); WriteVector128(right, b.AsInt16()); for (var i = 0; i < 4; i++) result[i] = left[i * 2] * right[i * 2] + left[i * 2 + 1] * right[i * 2 + 1]; return ReadVector128(result).AsByte(); }
 
     // --- bitselect (NET5+) ---
     public static Vector128<byte> V128Bitselect(Vector128<byte> v1, Vector128<byte> v2, Vector128<byte> mask) => Vector128.ConditionalSelect(mask, v1, v2);
 
     // --- trunc sat / convert / demote / promote (NET5+) ---
-    public static Vector128<byte> Int32x4TruncSatF32x4S(Vector128<byte> a) { var r = new int[4]; for (var i = 0; i < 4; i++) { var f = a.AsSingle().GetElement(i); r[i] = float.IsNaN(f) ? 0 : f >= 2147483647f ? int.MaxValue : f <= -2147483648f ? int.MinValue : (int)f; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4TruncSatF32x4U(Vector128<byte> a) { var r = new uint[4]; for (var i = 0; i < 4; i++) { var f = a.AsSingle().GetElement(i); r[i] = float.IsNaN(f) || f < 0 ? 0u : f >= 4294967295f ? uint.MaxValue : (uint)f; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4TruncSatF64x2SZero(Vector128<byte> a) { var r = new int[4]; for (var i = 0; i < 2; i++) { var f = a.AsDouble().GetElement(i); r[i] = double.IsNaN(f) ? 0 : f >= 2147483647d ? int.MaxValue : f <= -2147483648d ? int.MinValue : (int)f; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Int32x4TruncSatF64x2UZero(Vector128<byte> a) { var r = new uint[4]; for (var i = 0; i < 2; i++) { var f = a.AsDouble().GetElement(i); r[i] = double.IsNaN(f) || f < 0 ? 0u : f >= 4294967295d ? uint.MaxValue : (uint)f; } return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float32x4ConvertI32x4S(Vector128<byte> a) { var r = new float[4]; for (var i = 0; i < 4; i++) r[i] = a.AsInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float32x4ConvertI32x4U(Vector128<byte> a) { var r = new float[4]; for (var i = 0; i < 4; i++) r[i] = a.AsUInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float64x2ConvertLowI32x4S(Vector128<byte> a) { var r = new double[2]; for (var i = 0; i < 2; i++) r[i] = a.AsInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float64x2ConvertLowI32x4U(Vector128<byte> a) { var r = new double[2]; for (var i = 0; i < 2; i++) r[i] = a.AsUInt32().GetElement(i); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float32x4DemoteF64x2Zero(Vector128<byte> a) { var r = new float[4]; r[0] = (float)a.AsDouble().GetElement(0); r[1] = (float)a.AsDouble().GetElement(1); return Vector128.Create(r).AsByte(); }
-    public static Vector128<byte> Float64x2PromoteLowF32x4(Vector128<byte> a) { var r = new double[2]; r[0] = a.AsSingle().GetElement(0); r[1] = a.AsSingle().GetElement(1); return Vector128.Create(r).AsByte(); }
+    public static Vector128<byte> Int32x4TruncSatF32x4S(Vector128<byte> a) { Span<float> values = stackalloc float[4]; Span<int> result = stackalloc int[4]; WriteVector128(values, a.AsSingle()); for (var i = 0; i < 4; i++) { var f = values[i]; result[i] = float.IsNaN(f) ? 0 : f >= 2147483647f ? int.MaxValue : f <= -2147483648f ? int.MinValue : (int)f; } return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4TruncSatF32x4U(Vector128<byte> a) { Span<float> values = stackalloc float[4]; Span<uint> result = stackalloc uint[4]; WriteVector128(values, a.AsSingle()); for (var i = 0; i < 4; i++) { var f = values[i]; result[i] = float.IsNaN(f) || f < 0 ? 0u : f >= 4294967295f ? uint.MaxValue : (uint)f; } return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4TruncSatF64x2SZero(Vector128<byte> a) { Span<double> values = stackalloc double[2]; Span<int> result = stackalloc int[4]; WriteVector128(values, a.AsDouble()); for (var i = 0; i < 2; i++) { var f = values[i]; result[i] = double.IsNaN(f) ? 0 : f >= 2147483647d ? int.MaxValue : f <= -2147483648d ? int.MinValue : (int)f; } return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Int32x4TruncSatF64x2UZero(Vector128<byte> a) { Span<double> values = stackalloc double[2]; Span<uint> result = stackalloc uint[4]; WriteVector128(values, a.AsDouble()); for (var i = 0; i < 2; i++) { var f = values[i]; result[i] = double.IsNaN(f) || f < 0 ? 0u : f >= 4294967295d ? uint.MaxValue : (uint)f; } return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float32x4ConvertI32x4S(Vector128<byte> a) { Span<int> values = stackalloc int[4]; Span<float> result = stackalloc float[4]; WriteVector128(values, a.AsInt32()); for (var i = 0; i < 4; i++) result[i] = values[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float32x4ConvertI32x4U(Vector128<byte> a) { Span<uint> values = stackalloc uint[4]; Span<float> result = stackalloc float[4]; WriteVector128(values, a.AsUInt32()); for (var i = 0; i < 4; i++) result[i] = values[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float64x2ConvertLowI32x4S(Vector128<byte> a) { Span<int> values = stackalloc int[4]; Span<double> result = stackalloc double[2]; WriteVector128(values, a.AsInt32()); for (var i = 0; i < 2; i++) result[i] = values[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float64x2ConvertLowI32x4U(Vector128<byte> a) { Span<uint> values = stackalloc uint[4]; Span<double> result = stackalloc double[2]; WriteVector128(values, a.AsUInt32()); for (var i = 0; i < 2; i++) result[i] = values[i]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float32x4DemoteF64x2Zero(Vector128<byte> a) { Span<double> values = stackalloc double[2]; Span<float> result = stackalloc float[4]; WriteVector128(values, a.AsDouble()); result[0] = (float)values[0]; result[1] = (float)values[1]; return ReadVector128(result).AsByte(); }
+    public static Vector128<byte> Float64x2PromoteLowF32x4(Vector128<byte> a) { Span<float> values = stackalloc float[4]; Span<double> result = stackalloc double[2]; WriteVector128(values, a.AsSingle()); result[0] = values[0]; result[1] = values[1]; return ReadVector128(result).AsByte(); }
 
     // --- load/store lane (NET5+) ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static unsafe Vector128<byte> V128Load8Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.WithElement(lane, *(byte*)ptr);
-    public static unsafe Vector128<byte> V128Load16Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var p=(byte*)ptr; return vec.AsInt16().WithElement(lane,(short)(p[0]|(p[1]<<8))).AsByte(); }
-    public static unsafe Vector128<byte> V128Load32Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var p=(byte*)ptr; return vec.AsInt32().WithElement(lane,p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)).AsByte(); }
-    public static unsafe Vector128<byte> V128Load64Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var p=(byte*)ptr; return vec.AsInt64().WithElement(lane,(long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56))).AsByte(); }
-    public static unsafe void V128Store8Lane(IntPtr ptr, Vector128<byte> vec, int lane) => *(byte*)ptr = vec.GetElement(lane);
-    public static unsafe void V128Store16Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var v=(ushort)(ushort)vec.AsInt16().GetElement(lane); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); }
-    public static unsafe void V128Store32Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var v=(uint)vec.AsInt32().GetElement(lane); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); p[2]=(byte)(v>>16); p[3]=(byte)(v>>24); }
-    public static unsafe void V128Store64Lane(IntPtr ptr, Vector128<byte> vec, int lane) { var v=(ulong)vec.AsInt64().GetElement(lane); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); p[2]=(byte)(v>>16); p[3]=(byte)(v>>24); p[4]=(byte)(v>>32); p[5]=(byte)(v>>40); p[6]=(byte)(v>>48); p[7]=(byte)(v>>56); }
+    public static unsafe Vector128<byte> V128Load8Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<byte> lanes = stackalloc byte[16];
+        WriteVector128(lanes, vec);
+        lanes[lane] = Unsafe.ReadUnaligned<byte>((void*)ptr);
+        return ReadVector128(lanes);
+    }
+    public static unsafe Vector128<byte> V128Load16Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<short> lanes = stackalloc short[8];
+        WriteVector128(lanes, vec.AsInt16());
+        lanes[lane] = Unsafe.ReadUnaligned<short>((void*)ptr);
+        return ReadVector128(lanes).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load32Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<int> lanes = stackalloc int[4];
+        WriteVector128(lanes, vec.AsInt32());
+        lanes[lane] = Unsafe.ReadUnaligned<int>((void*)ptr);
+        return ReadVector128(lanes).AsByte();
+    }
+    public static unsafe Vector128<byte> V128Load64Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<long> lanes = stackalloc long[2];
+        WriteVector128(lanes, vec.AsInt64());
+        lanes[lane] = Unsafe.ReadUnaligned<long>((void*)ptr);
+        return ReadVector128(lanes).AsByte();
+    }
+    public static unsafe void V128Store8Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<byte> lanes = stackalloc byte[16];
+        WriteVector128(lanes, vec);
+        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
+    }
+    public static unsafe void V128Store16Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<short> lanes = stackalloc short[8];
+        WriteVector128(lanes, vec.AsInt16());
+        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
+    }
+    public static unsafe void V128Store32Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<int> lanes = stackalloc int[4];
+        WriteVector128(lanes, vec.AsInt32());
+        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
+    }
+    public static unsafe void V128Store64Lane(IntPtr ptr, Vector128<byte> vec, int lane)
+    {
+        Span<long> lanes = stackalloc long[2];
+        WriteVector128(lanes, vec.AsInt64());
+        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
+    }
 
     // --- load zero (NET5+) ---
-    public static unsafe Vector128<byte> V128Load32Zero(IntPtr ptr) { var p=(byte*)ptr; return Vector128.Create(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24),0,0,0).AsByte(); }
-    public static unsafe Vector128<byte> V128Load64Zero(IntPtr ptr) { var p=(byte*)ptr; return Vector128.Create((long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56)),0L).AsByte(); }
+    public static unsafe Vector128<byte> V128Load32Zero(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<int>((void*)ptr), 0, 0, 0).AsByte();
+    public static unsafe Vector128<byte> V128Load64Zero(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<long>((void*)ptr), 0L).AsByte();
 
     // --- extended loads (NET5+) ---
     public static unsafe Vector128<byte> V128Load8x8S(IntPtr ptr)
@@ -1076,9 +1362,9 @@ public static class V128Helper
         }
 
         var p = (byte*)ptr;
-        Span<short> r = stackalloc short[8];
-        for (var i = 0; i < 8; i++) r[i] = (sbyte)p[i];
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<short> result = stackalloc short[8];
+        for (var i = 0; i < 8; i++) result[i] = (sbyte)p[i];
+        return ReadVector128(result).AsByte();
     }
     public static unsafe Vector128<byte> V128Load8x8U(IntPtr ptr)
     {
@@ -1089,9 +1375,9 @@ public static class V128Helper
         }
 
         var p = (byte*)ptr;
-        Span<ushort> r = stackalloc ushort[8];
-        for (var i = 0; i < 8; i++) r[i] = p[i];
-        return Vector128.Create(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]).AsByte();
+        Span<ushort> result = stackalloc ushort[8];
+        for (var i = 0; i < 8; i++) result[i] = p[i];
+        return ReadVector128(result).AsByte();
     }
     public static unsafe Vector128<byte> V128Load16x4S(IntPtr ptr)
     {
@@ -1102,10 +1388,14 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, sign).AsByte();
         }
 
-        var p = (byte*)ptr;
-        Span<int> r = stackalloc int[4];
-        for (var i = 0; i < 4; i++) r[i] = (short)(p[i * 2] | (p[i * 2 + 1] << 8));
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<short> values = stackalloc short[4];
+        Span<int> result = stackalloc int[4];
+        values[0] = Unsafe.ReadUnaligned<short>((void*)ptr);
+        values[1] = Unsafe.ReadUnaligned<short>((byte*)ptr + 2);
+        values[2] = Unsafe.ReadUnaligned<short>((byte*)ptr + 4);
+        values[3] = Unsafe.ReadUnaligned<short>((byte*)ptr + 6);
+        for (var i = 0; i < 4; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static unsafe Vector128<byte> V128Load16x4U(IntPtr ptr)
     {
@@ -1115,10 +1405,14 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, Vector128<ushort>.Zero).AsByte();
         }
 
-        var p = (byte*)ptr;
-        Span<uint> r = stackalloc uint[4];
-        for (var i = 0; i < 4; i++) r[i] = (ushort)(p[i * 2] | (p[i * 2 + 1] << 8));
-        return Vector128.Create(r[0], r[1], r[2], r[3]).AsByte();
+        Span<ushort> values = stackalloc ushort[4];
+        Span<uint> result = stackalloc uint[4];
+        values[0] = Unsafe.ReadUnaligned<ushort>((void*)ptr);
+        values[1] = Unsafe.ReadUnaligned<ushort>((byte*)ptr + 2);
+        values[2] = Unsafe.ReadUnaligned<ushort>((byte*)ptr + 4);
+        values[3] = Unsafe.ReadUnaligned<ushort>((byte*)ptr + 6);
+        for (var i = 0; i < 4; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static unsafe Vector128<byte> V128Load32x2S(IntPtr ptr)
     {
@@ -1129,10 +1423,12 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, sign).AsByte();
         }
 
-        var p = (byte*)ptr;
-        Span<long> r = stackalloc long[2];
-        for (var i = 0; i < 2; i++) r[i] = (int)(p[i * 4] | (p[i * 4 + 1] << 8) | (p[i * 4 + 2] << 16) | (p[i * 4 + 3] << 24));
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<int> values = stackalloc int[2];
+        Span<long> result = stackalloc long[2];
+        values[0] = Unsafe.ReadUnaligned<int>((void*)ptr);
+        values[1] = Unsafe.ReadUnaligned<int>((byte*)ptr + 4);
+        for (var i = 0; i < 2; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     public static unsafe Vector128<byte> V128Load32x2U(IntPtr ptr)
     {
@@ -1142,16 +1438,18 @@ public static class V128Helper
             return Sse2.UnpackLow(lanes, Vector128<uint>.Zero).AsByte();
         }
 
-        var p = (byte*)ptr;
-        Span<ulong> r = stackalloc ulong[2];
-        for (var i = 0; i < 2; i++) r[i] = (uint)(p[i * 4] | (p[i * 4 + 1] << 8) | (p[i * 4 + 2] << 16) | (p[i * 4 + 3] << 24));
-        return Vector128.Create(r[0], r[1]).AsByte();
+        Span<uint> values = stackalloc uint[2];
+        Span<ulong> result = stackalloc ulong[2];
+        values[0] = Unsafe.ReadUnaligned<uint>((void*)ptr);
+        values[1] = Unsafe.ReadUnaligned<uint>((byte*)ptr + 4);
+        for (var i = 0; i < 2; i++) result[i] = values[i];
+        return ReadVector128(result).AsByte();
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load8Splat(IntPtr ptr) => Vector128.Create(*((byte*)ptr));
-    public static unsafe Vector128<byte> V128Load16Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create((short)(p[0]|(p[1]<<8))).AsByte(); }
-    public static unsafe Vector128<byte> V128Load32Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)).AsByte(); }
-    public static unsafe Vector128<byte> V128Load64Splat(IntPtr ptr) { var p = (byte*)ptr; return Vector128.Create((long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56))).AsByte(); }
+    public static unsafe Vector128<byte> V128Load16Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<short>((void*)ptr)).AsByte();
+    public static unsafe Vector128<byte> V128Load32Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<int>((void*)ptr)).AsByte();
+    public static unsafe Vector128<byte> V128Load64Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<long>((void*)ptr)).AsByte();
 #pragma warning restore CS1591
 #else
     /// <summary>
