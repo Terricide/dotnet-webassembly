@@ -59,5 +59,9 @@ public class GlobalSet : VariableAccessInstruction
             context.EmitLoadThis();
 
         context.Emit(OpCodes.Call, global.Setter);
+
+        // Imported global setters run host code, which may grow linear memory.
+        if (this.Index < (uint)context.ImportedGlobalCount)
+            context.EmitRefreshMemoryCache();
     }
 }

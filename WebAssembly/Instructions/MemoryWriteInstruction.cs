@@ -29,6 +29,18 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
         var addressType = context.MemoryAddressType;
         context.PopStackNoReturn(this.OpCode, this.Type, addressType);
 
+        if (context.MemoryCacheActive
+            && addressType == WebAssemblyValueType.Int32
+            && this.Offset <= int.MaxValue)
+        {
+            var valueLocal = context.GetScratchLocal(this.Type.ToSystemType(), "memValue");
+            context.Emit(OpCodes.Stloc, valueLocal);
+            EmitBoundsCheckedAddress(context, this.Offset, this.Size, this.RangeCheckHelper);
+            context.Emit(OpCodes.Ldloc, valueLocal);
+            EmitStoreValue(context);
+            return;
+        }
+
         if (addressType == WebAssemblyValueType.Int64)
         {
             var valueLocal = context.DeclareLocal(this.Type.ToSystemType());
@@ -88,5 +100,23 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
         il.Emit(OpCodes.Ret);
 
         return builder;
+    }
+
+    private void EmitStoreValue(CompilationContext context)
+    {
+        if (this.Type == WebAssemblyValueType.Float32)
+        {
+            context.Emit(OpCodes.Call, FloatHelper.FloatToUInt32BitsMethod);
+            context.Emit(OpCodes.Stind_I4);
+        }
+        else if (this.Type == WebAssemblyValueType.Float64)
+        {
+            context.Emit(OpCodes.Call, FloatHelper.DoubleToUInt64BitsMethod);
+            context.Emit(OpCodes.Stind_I8);
+        }
+        else
+        {
+            context.Emit(this.EmittedOpCode);
+        }
     }
 }

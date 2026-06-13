@@ -8,7 +8,7 @@ using WebAssembly.Runtime;
 namespace WebAssembly;
 
 /// <summary>
-/// Contains raw information about a WebAssembly module.  Use <see cref="Compile"/> if you wish to execute a WebAssembly file.
+/// Contains raw information about a WebAssembly module.  Use <see cref="Compile{TExports}()"/> if you wish to execute a WebAssembly file.
 /// </summary>
 public class Module
 {
@@ -679,11 +679,24 @@ public class Module
     /// <exception cref="ModuleLoadException">An error was encountered while reading the WebAssembly file.</exception>
     public InstanceCreator<TExports> Compile<TExports>()
     where TExports : class
+        => this.Compile<TExports>(new Runtime.CompilerConfiguration());
+
+    /// <summary>
+    /// Creates an executable <see cref="Instance{TExports}"/> from this instance's data.
+    /// This is intended for use with run-time code generation.  For directly compiling WebAssembly byte code, use <see cref="Runtime.Compile"/>.
+    /// </summary>
+    /// <param name="configuration">Configures the compiler.</param>
+    /// <returns>A function that creates runnable instances.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="configuration"/> cannot be null.</exception>
+    /// <exception cref="ModuleLoadException">An error was encountered while reading the WebAssembly file.</exception>
+    public InstanceCreator<TExports> Compile<TExports>(Runtime.CompilerConfiguration configuration)
+    where TExports : class
     {
+        _ = configuration ?? throw new ArgumentNullException(nameof(configuration));
         //TODO: A more direct compilation process will be faster and create less garbage.
         using var memory = new MemoryStream();
         this.WriteToBinary(memory);
         memory.Position = 0;
-        return Runtime.Compile.FromBinary<TExports>(memory);
+        return Runtime.Compile.FromBinary<TExports>(memory, configuration);
     }
 }

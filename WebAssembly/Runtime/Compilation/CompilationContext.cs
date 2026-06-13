@@ -66,6 +66,68 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         this.BlockContexts.Add(this.Depth.Count, new BlockContext());
 
         this.Labels.Add(0, generator.DefineLabel());
+
+        this.MemoryStartLocal = null;
+        this.MemorySizeLocal = null;
+        this.scratchLocals.Clear();
+    }
+
+    /// <summary>
+    /// Caches <see cref="UnmanagedMemory.RawStart"/> for the current function so memory accesses
+    /// avoid repeated field loads. Null when the current function doesn't access linear memory.
+    /// </summary>
+    public LocalBuilder? MemoryStartLocal;
+
+    /// <summary>
+    /// Caches <see cref="UnmanagedMemory.RawSize"/> (zero-extended to 64 bits) for the current function.
+    /// </summary>
+    public LocalBuilder? MemorySizeLocal;
+
+    public bool MemoryCacheActive => this.MemoryStartLocal is not null;
+
+    private readonly Dictionary<(Type Type, string Purpose), LocalBuilder> scratchLocals = [];
+
+    /// <summary>
+    /// Returns a function-scoped scratch local shared by all instructions that request the same
+    /// type and purpose. Only safe for values whose lifetime is contained within the IL emitted
+    /// for a single instruction, with no other scratch user of the same key in between.
+    /// </summary>
+    public LocalBuilder GetScratchLocal(Type type, string purpose)
+    {
+        if (!this.scratchLocals.TryGetValue((type, purpose), out var local))
+            this.scratchLocals.Add((type, purpose), local = this.DeclareLocal(type));
+        return local;
+    }
+
+    /// <summary>
+    /// Declares and initializes the memory base/size cache locals. Must be emitted in the
+    /// function prologue, before any instruction that may consume them.
+    /// </summary>
+    public void EmitInitMemoryCache()
+    {
+        this.MemoryStartLocal = this.DeclareLocal(typeof(IntPtr));
+        this.MemorySizeLocal = this.DeclareLocal(typeof(long));
+        this.EmitRefreshMemoryCache();
+    }
+
+    /// <summary>
+    /// Re-reads the memory base/size into the cache locals. Must be emitted after every operation
+    /// that may grow linear memory (calls, indirect calls, memory.grow) because growth can both
+    /// change the size and relocate the buffer. Stack-neutral.
+    /// </summary>
+    public void EmitRefreshMemoryCache()
+    {
+        if (this.MemoryStartLocal is null || this.MemorySizeLocal is null)
+            return;
+
+        this.EmitLoadThis();
+        this.Emit(OpCodes.Ldfld, this.CheckedMemory);
+        this.Emit(OpCodes.Dup);
+        this.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
+        this.Emit(OpCodes.Stloc, this.MemoryStartLocal);
+        this.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        this.Emit(OpCodes.Conv_U8);
+        this.Emit(OpCodes.Stloc, this.MemorySizeLocal);
     }
 
     public Signature[]? FunctionSignatures;
@@ -84,7 +146,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
 
     public readonly Dictionary<uint, MethodInfo> DelegateInvokersByTypeIndex = [];
 
-    public readonly Dictionary<(uint TypeIndex, uint TableIndex), MethodBuilder> DelegateRemappersByType = [];
+    public readonly Dictionary<(uint TypeIndex, uint TableIndex, uint FunctionIndex, long InstructionOffset, bool IsSiteSpecific), MethodBuilder> DelegateRemappersByType = [];
 
     /// <summary>
     /// Function indices that are valid ref.func targets for function bodies.
@@ -150,6 +212,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
     }
 
     private readonly Dictionary<HelperMethod, MethodBuilder> helperMethods = [];
+    private readonly Dictionary<string, FieldBuilder> v128ConstantFields = [];
 
     public MethodInfo this[HelperMethod helper]
     {
@@ -174,9 +237,25 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         }
     }
 
+    public FieldBuilder GetOrCreateV128ConstantField(byte[] value, string namePrefix)
+    {
+        var key = BitConverter.ToString(value);
+        if (this.v128ConstantFields.TryGetValue(key, out var field))
+            return field;
+
+        field = this.CheckedExportsBuilder.DefineInitializedData(
+            $"{namePrefix} {this.v128ConstantFields.Count}",
+            value,
+            FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly);
+        this.v128ConstantFields.Add(key, field);
+        return field;
+    }
+
     public Signature? Signature;
 
     public FieldBuilder? Memory;
+
+    public FieldBuilder? CallIndirectProfiler;
 
     public WebAssemblyValueType MemoryAddressType = WebAssemblyValueType.Int32;
 
@@ -185,6 +264,8 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
     public readonly BlockStack Depth = new();
 
     public OpCode Previous;
+
+    public uint CurrentFunctionIndex;
 
     public readonly Dictionary<uint, Label> Labels = [];
 
@@ -409,6 +490,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         return blockCtx.ResultLocal;
     }
 
+
     /// <summary>
     /// Marks the subsequent instructions as unreachable.
     /// </summary>
@@ -460,4 +542,5 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
             throw new InvalidOperationException($"Table index {tableIndex} out of range (only {TableElementTypes.Count} table types defined)");
         return TableElementTypes[(int)tableIndex];
     }
+
 }

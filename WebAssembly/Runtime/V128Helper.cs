@@ -342,10 +342,12 @@ public static class V128Helper
     /// <summary>v128 bitwise NOT.</summary>
     public static Vector128<byte> V128Not(Vector128<byte> a) => ~a;
     /// <summary>v128 bitwise AND.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> V128And(Vector128<byte> a, Vector128<byte> b) => a & b;
     /// <summary>v128 bitwise ANDNOT (a &amp; ~b).</summary>
     public static Vector128<byte> V128AndNot(Vector128<byte> a, Vector128<byte> b) => Vector128.AndNot(a, b);
     /// <summary>v128 bitwise OR.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> V128Or(Vector128<byte> a, Vector128<byte> b) => a | b;
     /// <summary>v128 bitwise XOR.</summary>
     public static Vector128<byte> V128Xor(Vector128<byte> a, Vector128<byte> b) => a ^ b;
@@ -363,6 +365,7 @@ public static class V128Helper
     }
 
     /// <summary>i8x16 shuffle with precomputed source masks, avoiding per-call index array allocation.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int8x16ShuffleImmediate(
         Vector128<byte> a,
         Vector128<byte> b,
@@ -439,111 +442,36 @@ public static class V128Helper
     public static Vector128<byte> Float64x2Splat(double x) => Vector128.Create(x).AsByte();
 
     /// <summary>Extract signed i8 lane as i32.</summary>
-    public static int Int8x16ExtractLaneS(Vector128<byte> v, int lane)
-    {
-        Span<sbyte> lanes = stackalloc sbyte[16];
-        WriteVector128(lanes, v.AsSByte());
-        return lanes[lane];
-    }
+    public static int Int8x16ExtractLaneS(Vector128<byte> v, int lane) => (sbyte)v.GetElement(lane);
     /// <summary>Extract unsigned i8 lane as i32.</summary>
-    public static int Int8x16ExtractLaneU(Vector128<byte> v, int lane)
-    {
-        Span<byte> lanes = stackalloc byte[16];
-        WriteVector128(lanes, v);
-        return lanes[lane];
-    }
+    public static int Int8x16ExtractLaneU(Vector128<byte> v, int lane) => v.GetElement(lane);
     /// <summary>Extract signed i16 lane as i32.</summary>
-    public static int Int16x8ExtractLaneS(Vector128<byte> v, int lane)
-    {
-        Span<short> lanes = stackalloc short[8];
-        WriteVector128(lanes, v.AsInt16());
-        return lanes[lane];
-    }
+    public static int Int16x8ExtractLaneS(Vector128<byte> v, int lane) => v.AsInt16().GetElement(lane);
     /// <summary>Extract unsigned i16 lane as i32.</summary>
-    public static int Int16x8ExtractLaneU(Vector128<byte> v, int lane)
-    {
-        Span<ushort> lanes = stackalloc ushort[8];
-        WriteVector128(lanes, v.AsUInt16());
-        return lanes[lane];
-    }
+    public static int Int16x8ExtractLaneU(Vector128<byte> v, int lane) => v.AsUInt16().GetElement(lane);
     /// <summary>Extract i32 lane.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Int32x4ExtractLane(Vector128<byte> v, int lane)
-    {
-        Span<int> lanes = stackalloc int[4];
-        WriteVector128(lanes, v.AsInt32());
-        return lanes[lane];
-    }
+    public static int Int32x4ExtractLane(Vector128<byte> v, int lane) => v.AsInt32().GetElement(lane);
     /// <summary>Extract i64 lane.</summary>
-    public static long Int64x2ExtractLane(Vector128<byte> v, int lane)
-    {
-        Span<long> lanes = stackalloc long[2];
-        WriteVector128(lanes, v.AsInt64());
-        return lanes[lane];
-    }
+    public static long Int64x2ExtractLane(Vector128<byte> v, int lane) => v.AsInt64().GetElement(lane);
     /// <summary>Extract f32 lane.</summary>
-    public static float Float32x4ExtractLane(Vector128<byte> v, int lane)
-    {
-        Span<float> lanes = stackalloc float[4];
-        WriteVector128(lanes, v.AsSingle());
-        return lanes[lane];
-    }
+    public static float Float32x4ExtractLane(Vector128<byte> v, int lane) => v.AsSingle().GetElement(lane);
     /// <summary>Extract f64 lane.</summary>
-    public static double Float64x2ExtractLane(Vector128<byte> v, int lane)
-    {
-        Span<double> lanes = stackalloc double[2];
-        WriteVector128(lanes, v.AsDouble());
-        return lanes[lane];
-    }
+    public static double Float64x2ExtractLane(Vector128<byte> v, int lane) => v.AsDouble().GetElement(lane);
 
     /// <summary>Replace i8x16 lane with low byte of i32.</summary>
-    public static Vector128<byte> Int8x16ReplaceLane(Vector128<byte> v, int lane, int x)
-    {
-        Span<byte> lanes = stackalloc byte[16];
-        WriteVector128(lanes, v);
-        lanes[lane] = (byte)(x & 0xFF);
-        return ReadVector128(lanes);
-    }
+    public static Vector128<byte> Int8x16ReplaceLane(Vector128<byte> v, int lane, int x) => v.WithElement(lane, (byte)(x & 0xFF));
     /// <summary>Replace i16x8 lane with low 16 bits of i32.</summary>
-    public static Vector128<byte> Int16x8ReplaceLane(Vector128<byte> v, int lane, int x)
-    {
-        Span<short> lanes = stackalloc short[8];
-        WriteVector128(lanes, v.AsInt16());
-        lanes[lane] = (short)(x & 0xFFFF);
-        return ReadVector128(lanes).AsByte();
-    }
+    public static Vector128<byte> Int16x8ReplaceLane(Vector128<byte> v, int lane, int x) => v.AsInt16().WithElement(lane, (short)(x & 0xFFFF)).AsByte();
     /// <summary>Replace i32x4 lane.</summary>
-    public static Vector128<byte> Int32x4ReplaceLane(Vector128<byte> v, int lane, int x)
-    {
-        Span<int> lanes = stackalloc int[4];
-        WriteVector128(lanes, v.AsInt32());
-        lanes[lane] = x;
-        return ReadVector128(lanes).AsByte();
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<byte> Int32x4ReplaceLane(Vector128<byte> v, int lane, int x) => v.AsInt32().WithElement(lane, x).AsByte();
     /// <summary>Replace i64x2 lane.</summary>
-    public static Vector128<byte> Int64x2ReplaceLane(Vector128<byte> v, int lane, long x)
-    {
-        Span<long> lanes = stackalloc long[2];
-        WriteVector128(lanes, v.AsInt64());
-        lanes[lane] = x;
-        return ReadVector128(lanes).AsByte();
-    }
+    public static Vector128<byte> Int64x2ReplaceLane(Vector128<byte> v, int lane, long x) => v.AsInt64().WithElement(lane, x).AsByte();
     /// <summary>Replace f32x4 lane.</summary>
-    public static Vector128<byte> Float32x4ReplaceLane(Vector128<byte> v, int lane, float x)
-    {
-        Span<float> lanes = stackalloc float[4];
-        WriteVector128(lanes, v.AsSingle());
-        lanes[lane] = x;
-        return ReadVector128(lanes).AsByte();
-    }
+    public static Vector128<byte> Float32x4ReplaceLane(Vector128<byte> v, int lane, float x) => v.AsSingle().WithElement(lane, x).AsByte();
     /// <summary>Replace f64x2 lane.</summary>
-    public static Vector128<byte> Float64x2ReplaceLane(Vector128<byte> v, int lane, double x)
-    {
-        Span<double> lanes = stackalloc double[2];
-        WriteVector128(lanes, v.AsDouble());
-        lanes[lane] = x;
-        return ReadVector128(lanes).AsByte();
-    }
+    public static Vector128<byte> Float64x2ReplaceLane(Vector128<byte> v, int lane, double x) => v.AsDouble().WithElement(lane, x).AsByte();
 
     /// <summary>i8x16 absolute value.</summary>
     public static Vector128<byte> Int8x16Abs(Vector128<byte> a) => Vector128.Abs(a.AsSByte()).AsByte();
@@ -988,6 +916,7 @@ public static class V128Helper
     public static Vector128<byte> Int16x8ShrU(Vector128<byte> a, int shift) => Vector128.ShiftRightLogical(a.AsUInt16(), shift & 15).AsByte();
     public static Vector128<byte> Int32x4Shl(Vector128<byte> a, int shift) => Vector128.ShiftLeft(a.AsInt32(), shift & 31).AsByte();
     public static Vector128<byte> Int32x4ShrS(Vector128<byte> a, int shift) => Vector128.ShiftRightArithmetic(a.AsInt32(), shift & 31).AsByte();
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4ShrU(Vector128<byte> a, int shift) => Vector128.ShiftRightLogical(a.AsUInt32(), shift & 31).AsByte();
     public static Vector128<byte> Int64x2Shl(Vector128<byte> a, int shift) => Vector128.ShiftLeft(a.AsInt64(), shift & 63).AsByte();
     public static Vector128<byte> Int64x2ShrS(Vector128<byte> a, int shift) => Vector128.ShiftRightArithmetic(a.AsInt64(), shift & 63).AsByte();
@@ -1080,6 +1009,7 @@ public static class V128Helper
         for (var i = 0; i < 4; i++) { var v = right[i]; result[4 + i] = v < -32768 ? (short)-32768 : v > 32767 ? (short)32767 : (short)v; }
         return ReadVector128(result).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int16x8NarrowI32x4U(Vector128<byte> a, Vector128<byte> b)
     {
         if (Sse41.IsSupported)
@@ -1147,6 +1077,7 @@ public static class V128Helper
         for (var i = 0; i < 8; i++) result[i] = values[8 + i];
         return ReadVector128(result).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<byte> Int32x4ExtLowI16x8S(Vector128<byte> a)
     {
         if (Sse2.IsSupported)
@@ -1294,58 +1225,15 @@ public static class V128Helper
 
     // --- load/store lane (NET5+) ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static unsafe Vector128<byte> V128Load8Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<byte> lanes = stackalloc byte[16];
-        WriteVector128(lanes, vec);
-        lanes[lane] = Unsafe.ReadUnaligned<byte>((void*)ptr);
-        return ReadVector128(lanes);
-    }
-    public static unsafe Vector128<byte> V128Load16Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<short> lanes = stackalloc short[8];
-        WriteVector128(lanes, vec.AsInt16());
-        lanes[lane] = Unsafe.ReadUnaligned<short>((void*)ptr);
-        return ReadVector128(lanes).AsByte();
-    }
-    public static unsafe Vector128<byte> V128Load32Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<int> lanes = stackalloc int[4];
-        WriteVector128(lanes, vec.AsInt32());
-        lanes[lane] = Unsafe.ReadUnaligned<int>((void*)ptr);
-        return ReadVector128(lanes).AsByte();
-    }
-    public static unsafe Vector128<byte> V128Load64Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<long> lanes = stackalloc long[2];
-        WriteVector128(lanes, vec.AsInt64());
-        lanes[lane] = Unsafe.ReadUnaligned<long>((void*)ptr);
-        return ReadVector128(lanes).AsByte();
-    }
-    public static unsafe void V128Store8Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<byte> lanes = stackalloc byte[16];
-        WriteVector128(lanes, vec);
-        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
-    }
-    public static unsafe void V128Store16Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<short> lanes = stackalloc short[8];
-        WriteVector128(lanes, vec.AsInt16());
-        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
-    }
-    public static unsafe void V128Store32Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<int> lanes = stackalloc int[4];
-        WriteVector128(lanes, vec.AsInt32());
-        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
-    }
-    public static unsafe void V128Store64Lane(IntPtr ptr, Vector128<byte> vec, int lane)
-    {
-        Span<long> lanes = stackalloc long[2];
-        WriteVector128(lanes, vec.AsInt64());
-        Unsafe.WriteUnaligned((void*)ptr, lanes[lane]);
-    }
+    public static unsafe Vector128<byte> V128Load8Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.WithElement(lane, *(byte*)ptr);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe Vector128<byte> V128Load16Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.AsInt16().WithElement(lane, Unsafe.ReadUnaligned<short>((void*)ptr)).AsByte();
+    public static unsafe Vector128<byte> V128Load32Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.AsInt32().WithElement(lane, Unsafe.ReadUnaligned<int>((void*)ptr)).AsByte();
+    public static unsafe Vector128<byte> V128Load64Lane(IntPtr ptr, Vector128<byte> vec, int lane) => vec.AsInt64().WithElement(lane, Unsafe.ReadUnaligned<long>((void*)ptr)).AsByte();
+    public static unsafe void V128Store8Lane(IntPtr ptr, Vector128<byte> vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, vec.GetElement(lane));
+    public static unsafe void V128Store16Lane(IntPtr ptr, Vector128<byte> vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, vec.AsInt16().GetElement(lane));
+    public static unsafe void V128Store32Lane(IntPtr ptr, Vector128<byte> vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, vec.AsInt32().GetElement(lane));
+    public static unsafe void V128Store64Lane(IntPtr ptr, Vector128<byte> vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, vec.AsInt64().GetElement(lane));
 
     // --- load zero (NET5+) ---
     public static unsafe Vector128<byte> V128Load32Zero(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<int>((void*)ptr), 0, 0, 0).AsByte();
@@ -1379,6 +1267,7 @@ public static class V128Helper
         for (var i = 0; i < 8; i++) result[i] = p[i];
         return ReadVector128(result).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load16x4S(IntPtr ptr)
     {
         if (Sse2.IsSupported)
@@ -1397,6 +1286,7 @@ public static class V128Helper
         for (var i = 0; i < 4; i++) result[i] = values[i];
         return ReadVector128(result).AsByte();
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load16x4U(IntPtr ptr)
     {
         if (Sse2.IsSupported)
@@ -1447,6 +1337,7 @@ public static class V128Helper
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load8Splat(IntPtr ptr) => Vector128.Create(*((byte*)ptr));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe Vector128<byte> V128Load16Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<short>((void*)ptr)).AsByte();
     public static unsafe Vector128<byte> V128Load32Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<int>((void*)ptr)).AsByte();
     public static unsafe Vector128<byte> V128Load64Splat(IntPtr ptr) => Vector128.Create(Unsafe.ReadUnaligned<long>((void*)ptr)).AsByte();
@@ -1487,7 +1378,6 @@ public static class V128Helper
             r12, r13, r14, r15);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte ShuffleImmediateLane(
         V128Polyfill a,
         V128Polyfill b,
@@ -1528,6 +1418,12 @@ public static class V128Helper
             B8 = b8, B9 = b9, B10 = b10, B11 = b11, B12 = b12, B13 = b13, B14 = b14, B15 = b15,
         };
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ref byte GetByteRef(ref V128Polyfill value) => ref value.B0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ref byte GetByteRefReadOnly(in V128Polyfill value) => ref Unsafe.AsRef(in value.B0);
+
 
     private static V128Polyfill ApplyBinary(V128Polyfill a, V128Polyfill b, Func<byte, byte, byte> op)
         => new() {
@@ -1554,20 +1450,42 @@ public static class V128Helper
     // shuffle / swizzle
     public static V128Polyfill Int8x16Shuffle(V128Polyfill a, V128Polyfill b, byte[] indices)
     {
-        var src = new byte[] { a.B0,a.B1,a.B2,a.B3,a.B4,a.B5,a.B6,a.B7,a.B8,a.B9,a.B10,a.B11,a.B12,a.B13,a.B14,a.B15,
-                               b.B0,b.B1,b.B2,b.B3,b.B4,b.B5,b.B6,b.B7,b.B8,b.B9,b.B10,b.B11,b.B12,b.B13,b.B14,b.B15 };
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) r[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        unsafe
+        {
+            var src = stackalloc byte[32];
+            var result = stackalloc byte[16];
+            ref var aRef = ref GetByteRefReadOnly(in a);
+            ref var bRef = ref GetByteRefReadOnly(in b);
+
+            for (var i = 0; i < 16; i++)
+            {
+                src[i] = Unsafe.Add(ref aRef, i);
+                src[16 + i] = Unsafe.Add(ref bRef, i);
+            }
+
+            for (var i = 0; i < 16; i++)
+                result[i] = indices[i] < 32 ? src[indices[i]] : (byte)0;
+
+            return Unsafe.ReadUnaligned<V128Polyfill>(result);
+        }
     }
 
     public static V128Polyfill Int8x16Swizzle(V128Polyfill a, V128Polyfill b)
     {
-        var src = new byte[] { a.B0,a.B1,a.B2,a.B3,a.B4,a.B5,a.B6,a.B7,a.B8,a.B9,a.B10,a.B11,a.B12,a.B13,a.B14,a.B15 };
-        var idx = new byte[] { b.B0,b.B1,b.B2,b.B3,b.B4,b.B5,b.B6,b.B7,b.B8,b.B9,b.B10,b.B11,b.B12,b.B13,b.B14,b.B15 };
-        var r = new byte[16];
-        for (var i = 0; i < 16; i++) r[i] = idx[i] < 16 ? src[idx[i]] : (byte)0;
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        unsafe
+        {
+            var result = stackalloc byte[16];
+            ref var aRef = ref GetByteRefReadOnly(in a);
+            ref var bRef = ref GetByteRefReadOnly(in b);
+
+            for (var i = 0; i < 16; i++)
+            {
+                var index = Unsafe.Add(ref bRef, i);
+                result[i] = index < 16 ? Unsafe.Add(ref aRef, index) : (byte)0;
+            }
+
+            return Unsafe.ReadUnaligned<V128Polyfill>(result);
+        }
     }
     // splats
     public static V128Polyfill Int8x16Splat(int x) { var b = (byte)(x & 0xFF); return Create(b,b,b,b,b,b,b,b,b,b,b,b,b,b,b,b); }
@@ -1601,27 +1519,30 @@ public static class V128Helper
         return Create(b0,b1,b2,b3,b4,b5,b6,b7,b0,b1,b2,b3,b4,b5,b6,b7);
     }
     // extract lane
-    private static byte GetByte(V128Polyfill v, int i) => i switch { 0=>v.B0,1=>v.B1,2=>v.B2,3=>v.B3,4=>v.B4,5=>v.B5,6=>v.B6,7=>v.B7,8=>v.B8,9=>v.B9,10=>v.B10,11=>v.B11,12=>v.B12,13=>v.B13,14=>v.B14,_=>v.B15 };
+    private static byte GetByte(V128Polyfill v, int i) => Unsafe.Add(ref GetByteRefReadOnly(in v), i);
     public static int Int8x16ExtractLaneS(V128Polyfill v, int lane) => (sbyte)GetByte(v, lane);
     public static int Int8x16ExtractLaneU(V128Polyfill v, int lane) => GetByte(v, lane);
-    public static int Int16x8ExtractLaneS(V128Polyfill v, int lane) { var b = lane*2; return (short)(GetByte(v,b)|(GetByte(v,b+1)<<8)); }
-    public static int Int16x8ExtractLaneU(V128Polyfill v, int lane) { var b = lane*2; return (ushort)(GetByte(v,b)|(GetByte(v,b+1)<<8)); }
-    public static int Int32x4ExtractLane(V128Polyfill v, int lane) { var b = lane*4; return GetByte(v,b)|(GetByte(v,b+1)<<8)|(GetByte(v,b+2)<<16)|(GetByte(v,b+3)<<24); }
-    public static long Int64x2ExtractLane(V128Polyfill v, int lane) { var b = lane*8; return (long)((ulong)GetByte(v,b)|((ulong)GetByte(v,b+1)<<8)|((ulong)GetByte(v,b+2)<<16)|((ulong)GetByte(v,b+3)<<24)|((ulong)GetByte(v,b+4)<<32)|((ulong)GetByte(v,b+5)<<40)|((ulong)GetByte(v,b+6)<<48)|((ulong)GetByte(v,b+7)<<56)); }
+    public static int Int16x8ExtractLaneS(V128Polyfill v, int lane) => Unsafe.ReadUnaligned<short>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), lane * 2));
+    public static int Int16x8ExtractLaneU(V128Polyfill v, int lane) => Unsafe.ReadUnaligned<ushort>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), lane * 2));
+    public static int Int32x4ExtractLane(V128Polyfill v, int lane) => Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), lane * 4));
+    public static long Int64x2ExtractLane(V128Polyfill v, int lane) => Unsafe.ReadUnaligned<long>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), lane * 8));
     public static float Float32x4ExtractLane(V128Polyfill v, int lane) => GetF32(v, lane*4);
     public static double Float64x2ExtractLane(V128Polyfill v, int lane) => lane == 0 ? GetF64Lo(v) : GetF64Hi(v);
     // replace lane
-    private static V128Polyfill SetByte(V128Polyfill v, int i, byte val) { switch(i){case 0:v.B0=val;break;case 1:v.B1=val;break;case 2:v.B2=val;break;case 3:v.B3=val;break;case 4:v.B4=val;break;case 5:v.B5=val;break;case 6:v.B6=val;break;case 7:v.B7=val;break;case 8:v.B8=val;break;case 9:v.B9=val;break;case 10:v.B10=val;break;case 11:v.B11=val;break;case 12:v.B12=val;break;case 13:v.B13=val;break;case 14:v.B14=val;break;default:v.B15=val;break;} return v; }
+    private static V128Polyfill SetByte(V128Polyfill v, int i, byte val) { Unsafe.Add(ref GetByteRef(ref v), i) = val; return v; }
     public static V128Polyfill Int8x16ReplaceLane(V128Polyfill v, int lane, int x) => SetByte(v, lane, (byte)(x & 0xFF));
-    public static V128Polyfill Int16x8ReplaceLane(V128Polyfill v, int lane, int x) { var b = lane*2; v = SetByte(v,b,(byte)(x&0xFF)); v = SetByte(v,b+1,(byte)((x>>8)&0xFF)); return v; }
-    public static V128Polyfill Int32x4ReplaceLane(V128Polyfill v, int lane, int x) { var b = lane*4; v = SetByte(v,b,(byte)x); v = SetByte(v,b+1,(byte)(x>>8)); v = SetByte(v,b+2,(byte)(x>>16)); v = SetByte(v,b+3,(byte)(x>>24)); return v; }
-    public static V128Polyfill Int64x2ReplaceLane(V128Polyfill v, int lane, long x) { var b = lane*8; for(var i=0;i<8;i++) v = SetByte(v,b+i,(byte)(x>>(i*8))); return v; }
+    public static V128Polyfill Int16x8ReplaceLane(V128Polyfill v, int lane, int x) { Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref v), lane * 2), (short)x); return v; }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static V128Polyfill Int32x4ReplaceLane(V128Polyfill v, int lane, int x) { Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref v), lane * 4), x); return v; }
+    public static V128Polyfill Int64x2ReplaceLane(V128Polyfill v, int lane, long x) { Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref v), lane * 8), x); return v; }
     public static V128Polyfill Float32x4ReplaceLane(V128Polyfill v, int lane, float x) => SetF32(v, lane*4, x);
     public static V128Polyfill Float64x2ReplaceLane(V128Polyfill v, int lane, double x) => SetF64(v, lane != 0, x);
     // v128 bitwise
     public static V128Polyfill V128Not(V128Polyfill a) => ApplyUnary(a, b => (byte)~b);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V128Polyfill V128And(V128Polyfill a, V128Polyfill b) => ApplyBinary(a, b, (x, y) => (byte)(x & y));
     public static V128Polyfill V128AndNot(V128Polyfill a, V128Polyfill b) => ApplyBinary(a, b, (x, y) => (byte)(x & ~y));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V128Polyfill V128Or(V128Polyfill a, V128Polyfill b) => ApplyBinary(a, b, (x, y) => (byte)(x | y));
     public static V128Polyfill V128Xor(V128Polyfill a, V128Polyfill b) => ApplyBinary(a, b, (x, y) => (byte)(x ^ y));
 
@@ -1772,18 +1693,11 @@ public static class V128Helper
 
     // f32x4 helpers
     private static float GetF32(V128Polyfill v, int offset)
-    {
-        uint u = offset switch { 0 => (uint)(v.B0|(v.B1<<8)|(v.B2<<16)|(v.B3<<24)), 4 => (uint)(v.B4|(v.B5<<8)|(v.B6<<16)|(v.B7<<24)), 8 => (uint)(v.B8|(v.B9<<8)|(v.B10<<16)|(v.B11<<24)), _ => (uint)(v.B12|(v.B13<<8)|(v.B14<<16)|(v.B15<<24)) };
-        return Unsafe.As<uint, float>(ref u);
-    }
+        => Unsafe.ReadUnaligned<float>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), offset));
+
     private static V128Polyfill SetF32(V128Polyfill v, int offset, float f)
     {
-        var u = Unsafe.As<float, uint>(ref f);
-        var b0 = (byte)u; var b1 = (byte)(u>>8); var b2 = (byte)(u>>16); var b3 = (byte)(u>>24);
-        if (offset == 0)  { v.B0=b0; v.B1=b1; v.B2=b2; v.B3=b3; }
-        else if (offset == 4) { v.B4=b0; v.B5=b1; v.B6=b2; v.B7=b3; }
-        else if (offset == 8) { v.B8=b0; v.B9=b1; v.B10=b2; v.B11=b3; }
-        else { v.B12=b0; v.B13=b1; v.B14=b2; v.B15=b3; }
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref v), offset), f);
         return v;
     }
     private static V128Polyfill ApplyF32x4Binary(V128Polyfill a, V128Polyfill b, Func<float, float, float> op)
@@ -1815,23 +1729,11 @@ public static class V128Helper
     public static V128Polyfill Float32x4Pmax(V128Polyfill a, V128Polyfill b) => ApplyF32x4Binary(a, b, (x, y) => y > x ? y : x);
 
     // f64x2 helpers
-    private static double GetF64Lo(V128Polyfill v)
-    {
-        var u = (ulong)v.B0|((ulong)v.B1<<8)|((ulong)v.B2<<16)|((ulong)v.B3<<24)|((ulong)v.B4<<32)|((ulong)v.B5<<40)|((ulong)v.B6<<48)|((ulong)v.B7<<56);
-        return Unsafe.As<ulong, double>(ref u);
-    }
-    private static double GetF64Hi(V128Polyfill v)
-    {
-        var u = (ulong)v.B8|((ulong)v.B9<<8)|((ulong)v.B10<<16)|((ulong)v.B11<<24)|((ulong)v.B12<<32)|((ulong)v.B13<<40)|((ulong)v.B14<<48)|((ulong)v.B15<<56);
-        return Unsafe.As<ulong, double>(ref u);
-    }
+    private static double GetF64Lo(V128Polyfill v) => Unsafe.ReadUnaligned<double>(ref GetByteRefReadOnly(in v));
+    private static double GetF64Hi(V128Polyfill v) => Unsafe.ReadUnaligned<double>(ref Unsafe.Add(ref GetByteRefReadOnly(in v), 8));
     private static V128Polyfill SetF64(V128Polyfill v, bool hi, double d)
     {
-        var u = Unsafe.As<double, ulong>(ref d);
-        var b = new byte[8];
-        for (var i = 0; i < 8; i++) b[i] = (byte)(u >> (i*8));
-        if (!hi) { v.B0=b[0];v.B1=b[1];v.B2=b[2];v.B3=b[3];v.B4=b[4];v.B5=b[5];v.B6=b[6];v.B7=b[7]; }
-        else      { v.B8=b[0];v.B9=b[1];v.B10=b[2];v.B11=b[3];v.B12=b[4];v.B13=b[5];v.B14=b[6];v.B15=b[7]; }
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref v), hi ? 8 : 0), d);
         return v;
     }
     private static V128Polyfill ApplyF64x2Binary(V128Polyfill a, V128Polyfill b, Func<double, double, double> op)
@@ -1934,6 +1836,7 @@ public static class V128Helper
     public static V128Polyfill Int16x8ShrU(V128Polyfill a, int s) { s &= 15; return ApplyI16Unary(a, x => (short)((ushort)x >> s)); }
     public static V128Polyfill Int32x4Shl(V128Polyfill a, int s) { s &= 31; return ApplyI32Unary(a, x => x << s); }
     public static V128Polyfill Int32x4ShrS(V128Polyfill a, int s) { s &= 31; return ApplyI32Unary(a, x => x >> s); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V128Polyfill Int32x4ShrU(V128Polyfill a, int s) { s &= 31; return ApplyI32Unary(a, x => (int)((uint)x >> s)); }
     public static V128Polyfill Int64x2Shl(V128Polyfill a, int s) { s &= 63; return ApplyI64Unary(a, x => x << s); }
     public static V128Polyfill Int64x2ShrS(V128Polyfill a, int s) { s &= 63; return ApplyI64Unary(a, x => x >> s); }
@@ -1959,6 +1862,7 @@ public static class V128Helper
     public static V128Polyfill Int8x16NarrowI16x8S(V128Polyfill a, V128Polyfill b) { var r=new byte[16]; for(var i=0;i<8;i++){var v=Int16x8ExtractLaneS(a,i);r[i]=(byte)(sbyte)(v<-128?-128:v>127?127:v);} for(var i=0;i<8;i++){var v=Int16x8ExtractLaneS(b,i);r[8+i]=(byte)(sbyte)(v<-128?-128:v>127?127:v);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int8x16NarrowI16x8U(V128Polyfill a, V128Polyfill b) { var r=new byte[16]; for(var i=0;i<8;i++){var v=Int16x8ExtractLaneS(a,i);r[i]=v<0?(byte)0:v>255?(byte)255:(byte)v;} for(var i=0;i<8;i++){var v=Int16x8ExtractLaneS(b,i);r[8+i]=v<0?(byte)0:v>255?(byte)255:(byte)v;} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int16x8NarrowI32x4S(V128Polyfill a, V128Polyfill b) { static short Clamp(int v)=>v<-32768?(short)-32768:v>32767?(short)32767:(short)v; var r=new byte[16]; for(var i=0;i<4;i++){var s=Clamp(Int32x4ExtractLane(a,i));r[i*2]=(byte)s;r[i*2+1]=(byte)((ushort)s>>8);} for(var i=0;i<4;i++){var s=Clamp(Int32x4ExtractLane(b,i));r[8+i*2]=(byte)s;r[8+i*2+1]=(byte)((ushort)s>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V128Polyfill Int16x8NarrowI32x4U(V128Polyfill a, V128Polyfill b) { static ushort ClampU(int v)=>v<0?(ushort)0:v>65535?(ushort)65535:(ushort)v; var r=new byte[16]; for(var i=0;i<4;i++){var s=ClampU(Int32x4ExtractLane(a,i));r[i*2]=(byte)s;r[i*2+1]=(byte)(s>>8);} for(var i=0;i<4;i++){var s=ClampU(Int32x4ExtractLane(b,i));r[8+i*2]=(byte)s;r[8+i*2+1]=(byte)(s>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
 
     // extend (polyfill)
@@ -1966,6 +1870,7 @@ public static class V128Helper
     public static V128Polyfill Int16x8ExtHighI8x16S(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<8;i++){var v=(short)(sbyte)GetByte(a,8+i);r[i*2]=(byte)v;r[i*2+1]=(byte)((ushort)v>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int16x8ExtLowI8x16U(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<8;i++){var v=(ushort)GetByte(a,i);r[i*2]=(byte)v;r[i*2+1]=(byte)(v>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int16x8ExtHighI8x16U(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<8;i++){var v=(ushort)GetByte(a,8+i);r[i*2]=(byte)v;r[i*2+1]=(byte)(v>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V128Polyfill Int32x4ExtLowI16x8S(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<4;i++){var v=(int)Int16x8ExtractLaneS(a,i);r[i*4]=(byte)v;r[i*4+1]=(byte)(v>>8);r[i*4+2]=(byte)(v>>16);r[i*4+3]=(byte)(v>>24);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int32x4ExtHighI16x8S(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<4;i++){var v=(int)Int16x8ExtractLaneS(a,4+i);r[i*4]=(byte)v;r[i*4+1]=(byte)(v>>8);r[i*4+2]=(byte)(v>>16);r[i*4+3]=(byte)(v>>24);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
     public static V128Polyfill Int32x4ExtLowI16x8U(V128Polyfill a) { var r=new byte[16]; for(var i=0;i<4;i++){var v=(uint)Int16x8ExtractLaneU(a,i);r[i*4]=(byte)v;r[i*4+1]=(byte)(v>>8);r[i*4+2]=(byte)(v>>16);r[i*4+3]=(byte)(v>>24);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
@@ -2017,45 +1922,45 @@ public static class V128Helper
     // --- load/store lane (polyfill) ---
     public static unsafe V128Polyfill V128Load8Lane(IntPtr ptr, V128Polyfill vec, int lane)
     {
-        var b = *(byte*)ptr;
-        var r = new byte[16]; for(var i=0;i<16;i++) r[i]=GetByte(vec,i); r[lane]=b;
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        Unsafe.Add(ref GetByteRef(ref vec), lane) = *(byte*)ptr;
+        return vec;
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe V128Polyfill V128Load16Lane(IntPtr ptr, V128Polyfill vec, int lane)
     {
-        var p=(byte*)ptr; var v=(ushort)(p[0]|(p[1]<<8));
-        var r=new byte[16]; for(var i=0;i<16;i++) r[i]=GetByte(vec,i); var b=lane*2; r[b]=(byte)v; r[b+1]=(byte)(v>>8);
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref vec), lane * 2), Unsafe.ReadUnaligned<ushort>((void*)ptr));
+        return vec;
     }
     public static unsafe V128Polyfill V128Load32Lane(IntPtr ptr, V128Polyfill vec, int lane)
     {
-        var p=(byte*)ptr; var v=(uint)(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24));
-        var r=new byte[16]; for(var i=0;i<16;i++) r[i]=GetByte(vec,i); var b=lane*4; r[b]=(byte)v; r[b+1]=(byte)(v>>8); r[b+2]=(byte)(v>>16); r[b+3]=(byte)(v>>24);
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref vec), lane * 4), Unsafe.ReadUnaligned<uint>((void*)ptr));
+        return vec;
     }
     public static unsafe V128Polyfill V128Load64Lane(IntPtr ptr, V128Polyfill vec, int lane)
     {
-        var p=(byte*)ptr; var v=(ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56);
-        var r=new byte[16]; for(var i=0;i<16;i++) r[i]=GetByte(vec,i); var b=lane*8; r[b]=(byte)v; r[b+1]=(byte)(v>>8); r[b+2]=(byte)(v>>16); r[b+3]=(byte)(v>>24); r[b+4]=(byte)(v>>32); r[b+5]=(byte)(v>>40); r[b+6]=(byte)(v>>48); r[b+7]=(byte)(v>>56);
-        return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref GetByteRef(ref vec), lane * 8), Unsafe.ReadUnaligned<ulong>((void*)ptr));
+        return vec;
     }
     public static unsafe void V128Store8Lane(IntPtr ptr, V128Polyfill vec, int lane) => *(byte*)ptr = GetByte(vec, lane);
-    public static unsafe void V128Store16Lane(IntPtr ptr, V128Polyfill vec, int lane) { var b=lane*2; var v=(ushort)(GetByte(vec,b)|(GetByte(vec,b+1)<<8)); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); }
-    public static unsafe void V128Store32Lane(IntPtr ptr, V128Polyfill vec, int lane) { var b=lane*4; var v=(uint)(GetByte(vec,b)|(GetByte(vec,b+1)<<8)|(GetByte(vec,b+2)<<16)|(GetByte(vec,b+3)<<24)); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); p[2]=(byte)(v>>16); p[3]=(byte)(v>>24); }
-    public static unsafe void V128Store64Lane(IntPtr ptr, V128Polyfill vec, int lane) { var b=lane*8; var v=(ulong)GetByte(vec,b)|((ulong)GetByte(vec,b+1)<<8)|((ulong)GetByte(vec,b+2)<<16)|((ulong)GetByte(vec,b+3)<<24)|((ulong)GetByte(vec,b+4)<<32)|((ulong)GetByte(vec,b+5)<<40)|((ulong)GetByte(vec,b+6)<<48)|((ulong)GetByte(vec,b+7)<<56); var p=(byte*)ptr; p[0]=(byte)v; p[1]=(byte)(v>>8); p[2]=(byte)(v>>16); p[3]=(byte)(v>>24); p[4]=(byte)(v>>32); p[5]=(byte)(v>>40); p[6]=(byte)(v>>48); p[7]=(byte)(v>>56); }
+    public static unsafe void V128Store16Lane(IntPtr ptr, V128Polyfill vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, Unsafe.ReadUnaligned<ushort>(ref Unsafe.Add(ref GetByteRefReadOnly(in vec), lane * 2)));
+    public static unsafe void V128Store32Lane(IntPtr ptr, V128Polyfill vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref GetByteRefReadOnly(in vec), lane * 4)));
+    public static unsafe void V128Store64Lane(IntPtr ptr, V128Polyfill vec, int lane) => Unsafe.WriteUnaligned((void*)ptr, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref GetByteRefReadOnly(in vec), lane * 8)));
 
     // --- load zero (polyfill) ---
     public static unsafe V128Polyfill V128Load32Zero(IntPtr ptr) { var p=(byte*)ptr; return Create(p[0],p[1],p[2],p[3],0,0,0,0,0,0,0,0,0,0,0,0); }
     public static unsafe V128Polyfill V128Load64Zero(IntPtr ptr) { var p=(byte*)ptr; return Create(p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],0,0,0,0,0,0,0,0); }
 
     // --- extended loads (polyfill) ---
-    public static unsafe V128Polyfill V128Load8x8S(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<8;i++){var v=(short)(sbyte)p[i];r[i*2]=(byte)v;r[i*2+1]=(byte)((ushort)v>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
-    public static unsafe V128Polyfill V128Load8x8U(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<8;i++){var v=(ushort)p[i];r[i*2]=(byte)v;r[i*2+1]=(byte)(v>>8);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
-    public static unsafe V128Polyfill V128Load16x4S(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<4;i++){var v=(int)(short)(p[i*2]|(p[i*2+1]<<8));r[i*4]=(byte)v;r[i*4+1]=(byte)(v>>8);r[i*4+2]=(byte)(v>>16);r[i*4+3]=(byte)(v>>24);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
-    public static unsafe V128Polyfill V128Load16x4U(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<4;i++){var v=(uint)(ushort)(p[i*2]|(p[i*2+1]<<8));r[i*4]=(byte)v;r[i*4+1]=(byte)(v>>8);r[i*4+2]=(byte)(v>>16);r[i*4+3]=(byte)(v>>24);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
-    public static unsafe V128Polyfill V128Load32x2S(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<2;i++){var v=(long)(int)(p[i*4]|(p[i*4+1]<<8)|(p[i*4+2]<<16)|(p[i*4+3]<<24));r[i*8]=(byte)v;r[i*8+1]=(byte)(v>>8);r[i*8+2]=(byte)(v>>16);r[i*8+3]=(byte)(v>>24);r[i*8+4]=(byte)(v>>32);r[i*8+5]=(byte)(v>>40);r[i*8+6]=(byte)(v>>48);r[i*8+7]=(byte)(v>>56);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
-    public static unsafe V128Polyfill V128Load32x2U(IntPtr ptr) { var p=(byte*)ptr; var r=new byte[16]; for(var i=0;i<2;i++){var v=(ulong)(uint)(p[i*4]|(p[i*4+1]<<8)|(p[i*4+2]<<16)|(p[i*4+3]<<24));r[i*8]=(byte)v;r[i*8+1]=(byte)(v>>8);r[i*8+2]=(byte)(v>>16);r[i*8+3]=(byte)(v>>24);r[i*8+4]=(byte)(v>>32);r[i*8+5]=(byte)(v>>40);r[i*8+6]=(byte)(v>>48);r[i*8+7]=(byte)(v>>56);} return Create(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]); }
+    public static unsafe V128Polyfill V128Load8x8S(IntPtr ptr) { var values = stackalloc short[8]; for(var i = 0; i < 8; i++) values[i] = (sbyte)((byte*)ptr)[i]; return Unsafe.ReadUnaligned<V128Polyfill>(values); }
+    public static unsafe V128Polyfill V128Load8x8U(IntPtr ptr) { var values = stackalloc ushort[8]; for(var i = 0; i < 8; i++) values[i] = ((byte*)ptr)[i]; return Unsafe.ReadUnaligned<V128Polyfill>(values); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe V128Polyfill V128Load16x4S(IntPtr ptr) { var values = stackalloc int[4]; for(var i = 0; i < 4; i++) values[i] = Unsafe.ReadUnaligned<short>((byte*)ptr + (i * 2)); return Unsafe.ReadUnaligned<V128Polyfill>(values); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe V128Polyfill V128Load16x4U(IntPtr ptr) { var values = stackalloc uint[4]; for(var i = 0; i < 4; i++) values[i] = Unsafe.ReadUnaligned<ushort>((byte*)ptr + (i * 2)); return Unsafe.ReadUnaligned<V128Polyfill>(values); }
+    public static unsafe V128Polyfill V128Load32x2S(IntPtr ptr) { var values = stackalloc long[2]; for(var i = 0; i < 2; i++) values[i] = Unsafe.ReadUnaligned<int>((byte*)ptr + (i * 4)); return Unsafe.ReadUnaligned<V128Polyfill>(values); }
+    public static unsafe V128Polyfill V128Load32x2U(IntPtr ptr) { var values = stackalloc ulong[2]; for(var i = 0; i < 2; i++) values[i] = Unsafe.ReadUnaligned<uint>((byte*)ptr + (i * 4)); return Unsafe.ReadUnaligned<V128Polyfill>(values); }
     public static unsafe V128Polyfill V128Load8Splat(IntPtr ptr) { var b=*(byte*)ptr; return Create(b,b,b,b,b,b,b,b,b,b,b,b,b,b,b,b); }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe V128Polyfill V128Load16Splat(IntPtr ptr) { var p=(byte*)ptr; return Int16x8Splat(p[0]|(p[1]<<8)); }
     public static unsafe V128Polyfill V128Load32Splat(IntPtr ptr) { var p=(byte*)ptr; return Int32x4Splat(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)); }
     public static unsafe V128Polyfill V128Load64Splat(IntPtr ptr) { var p=(byte*)ptr; return Int64x2Splat((long)((ulong)p[0]|((ulong)p[1]<<8)|((ulong)p[2]<<16)|((ulong)p[3]<<24)|((ulong)p[4]<<32)|((ulong)p[5]<<40)|((ulong)p[6]<<48)|((ulong)p[7]<<56))); }

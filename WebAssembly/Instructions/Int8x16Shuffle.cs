@@ -37,23 +37,24 @@ public class Int8x16Shuffle : SimdInstruction, IEquatable<Int8x16Shuffle>
 
         EmitMaskVector(context, selectFirstVector: true);
         EmitMaskVector(context, selectFirstVector: false);
-
         context.Emit(OpCodes.Call, V128Helper.Int8x16ShuffleImmediateMethod.Reference);
         context.Stack.Push(WebAssemblyValueType.V128);
     }
 
     void EmitMaskVector(CompilationContext context, bool selectFirstVector)
     {
+        var maskBytes = new byte[16];
         for (var i = 0; i < 16; i++)
         {
             byte lane = Indices[i];
-            byte mask = selectFirstVector
+            maskBytes[i] = selectFirstVector
                 ? lane < 16 ? lane : (byte)0x80
                 : lane >= 16 ? (byte)(lane - 16) : (byte)0x80;
-            Int32Constant.Emit(context, mask);
         }
 
-        context.Emit(OpCodes.Call, V128Helper.CreateMethod.Reference);
+        var field = context.GetOrCreateV128ConstantField(maskBytes, "☣ ShuffleMask");
+        context.Emit(OpCodes.Ldsflda, field);
+        context.Emit(OpCodes.Ldobj, V128Helper.V128Type);
     }
 
     /// <inheritdoc/>

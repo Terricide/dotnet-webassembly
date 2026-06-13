@@ -1,4 +1,4 @@
-﻿using System.Reflection.Emit;
+using System.Reflection.Emit;
 using WebAssembly.Runtime;
 using WebAssembly.Runtime.Compilation;
 using FloatHelper = WebAssembly.Runtime.FloatHelper;
@@ -30,24 +30,7 @@ public abstract class MemoryReadInstruction : MemoryImmediateInstruction
         this.ValidateAlignment();
         context.PopStackNoReturn(this.OpCode, addressType);
 
-        if (this.Offset != 0)
-        {
-            if (addressType == WebAssemblyValueType.Int64)
-                context.Emit(OpCodes.Ldc_I8, (long)this.Offset);
-            else
-                Int32Constant.Emit(context, (int)this.Offset);
-            context.Emit(OpCodes.Add_Ovf_Un);
-        }
-
-        if (addressType == WebAssemblyValueType.Int64)
-            context.Emit(OpCodes.Conv_Ovf_U4);
-
-        this.EmitRangeCheck(context);
-
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
-        context.Emit(OpCodes.Add);
+        EmitBoundsCheckedAddress(context, this.Offset, this.Size, this.RangeCheckHelper);
 
         byte alignment;
         switch (this.Flags & Options.Align8)
