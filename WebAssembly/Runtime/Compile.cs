@@ -165,7 +165,10 @@ public static class Compile
                         : import;
                 };
 
-                return (Instance<TExports>)constructor.Invoke([findImport]);
+                return (Instance<TExports>)constructor.Invoke(
+                    configuration.CreateCallIndirectProfiler == null
+                        ? [findImport]
+                        : [findImport, configuration.CreateCallIndirectProfiler.Invoke()]);
             }
             catch (TargetInvocationException x)
 #if DEBUG
@@ -295,6 +298,9 @@ public static class Compile
 #else
         ArgumentNullException.ThrowIfNull(configuration, nameof(configuration));
 #endif
+        var enableCallIndirectProfiling = configuration.CreateCallIndirectProfiler != null;
+        if (enableCallIndirectProfiling && (instanceContainer == null || exportContainer == null))
+            throw new NotSupportedException("call_indirect profiling is only supported for runtime compilation.");
 
         switch (reader.ReadUInt32())
         {
@@ -326,9 +332,13 @@ public static class Compile
             var instanceConstructor = exportsBuilder.DefineConstructor(
                 ConstructorAttributes,
                 CallingConventions.Standard,
-                [configuration.NeutralizeType(typeof(Func<string, string, RuntimeImport>))]
+                enableCallIndirectProfiling
+                    ? [configuration.NeutralizeType(typeof(Func<string, string, RuntimeImport>)), configuration.NeutralizeType(typeof(ICallIndirectProfiler))]
+                    : [configuration.NeutralizeType(typeof(Func<string, string, RuntimeImport>))]
                 );
             instanceConstructor.DefineParameter(1, ParameterAttributes.None, "findImport");
+            if (enableCallIndirectProfiling)
+                instanceConstructor.DefineParameter(2, ParameterAttributes.None, "callIndirectProfiler");
             instanceConstructorIL = instanceConstructor.GetILGenerator();
             {
                 if (exportContainer is TypeBuilder buildableExportContainer)
@@ -363,6 +373,16 @@ public static class Compile
             "☣ FunctionRefs",
             typeof(Delegate[]),
             FieldAttributes.Private | FieldAttributes.InitOnly);
+        if (enableCallIndirectProfiling)
+        {
+            context.CallIndirectProfiler = exportsBuilder.DefineField(
+                "☣ CallIndirectProfiler",
+                configuration.NeutralizeType(typeof(ICallIndirectProfiler)),
+                PrivateReadonlyField);
+            instanceConstructorIL.EmitLoadArg(0);
+            instanceConstructorIL.EmitLoadArg(2);
+            instanceConstructorIL.Emit(OpCodes.Stfld, context.CallIndirectProfiler);
+        }
 
         var preSectionOffset = reader.Offset;
         while (reader.TryReadVarUInt7(out var id)) //At points where TryRead is used, the stream can safely end.
@@ -796,13 +816,17 @@ public static class Compile
             var instanceConstructor = instanceBuilder.DefineConstructor(
                 ConstructorAttributes,
                 CallingConventions.Standard,
-                [typeof(Func<string, string, RuntimeImport>)]
+                enableCallIndirectProfiling
+                    ? [typeof(Func<string, string, RuntimeImport>), typeof(ICallIndirectProfiler)]
+                    : [typeof(Func<string, string, RuntimeImport>)]
                 );
             var il = instanceConstructor.GetILGenerator();
             var memoryAllocated = checked(memoryPagesMaximum * Memory.PageSize);
 
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldarg_1);
+            if (enableCallIndirectProfiling)
+                il.Emit(OpCodes.Ldarg_2);
             il.Emit(OpCodes.Newobj, exportInfo.DeclaredConstructors.First());
 
             ConstructorInfo importConstructor;
@@ -2380,6 +2404,7 @@ public static class Compile
                     .SelectMany(local => Enumerable.Range(0, checked((int)local.Count)).Select(_ => local.Type))
 ,
                 ]);
+            context.CurrentFunctionIndex = (uint)(importedFunctions + functionBodyIndex);
 
             foreach (var local in locals.SelectMany(local => Enumerable.Range(0, checked((int)local.Count)).Select(_ => local.Type)))
             {

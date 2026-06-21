@@ -84,7 +84,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
 
     public readonly Dictionary<uint, MethodInfo> DelegateInvokersByTypeIndex = [];
 
-    public readonly Dictionary<(uint TypeIndex, uint TableIndex), MethodBuilder> DelegateRemappersByType = [];
+    public readonly Dictionary<(uint TypeIndex, uint TableIndex, uint FunctionIndex, long InstructionOffset, bool IsSiteSpecific), MethodBuilder> DelegateRemappersByType = [];
 
     /// <summary>
     /// Function indices that are valid ref.func targets for function bodies.
@@ -150,6 +150,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
     }
 
     private readonly Dictionary<HelperMethod, MethodBuilder> helperMethods = [];
+    private readonly Dictionary<string, FieldBuilder> v128ConstantFields = [];
 
     public MethodInfo this[HelperMethod helper]
     {
@@ -174,9 +175,25 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         }
     }
 
+    public FieldBuilder GetOrCreateV128ConstantField(byte[] value, string namePrefix)
+    {
+        var key = BitConverter.ToString(value);
+        if (this.v128ConstantFields.TryGetValue(key, out var field))
+            return field;
+
+        field = this.CheckedExportsBuilder.DefineInitializedData(
+            $"{namePrefix} {this.v128ConstantFields.Count}",
+            value,
+            FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly);
+        this.v128ConstantFields.Add(key, field);
+        return field;
+    }
+
     public Signature? Signature;
 
     public FieldBuilder? Memory;
+
+    public FieldBuilder? CallIndirectProfiler;
 
     public WebAssemblyValueType MemoryAddressType = WebAssemblyValueType.Int32;
 
@@ -185,6 +202,8 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
     public readonly BlockStack Depth = new();
 
     public OpCode Previous;
+
+    public uint CurrentFunctionIndex;
 
     public readonly Dictionary<uint, Label> Labels = [];
 
@@ -409,6 +428,7 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         return blockCtx.ResultLocal;
     }
 
+
     /// <summary>
     /// Marks the subsequent instructions as unreachable.
     /// </summary>
@@ -460,4 +480,5 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
             throw new InvalidOperationException($"Table index {tableIndex} out of range (only {TableElementTypes.Count} table types defined)");
         return TableElementTypes[(int)tableIndex];
     }
+
 }

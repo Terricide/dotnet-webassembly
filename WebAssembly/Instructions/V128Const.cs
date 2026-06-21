@@ -32,10 +32,9 @@ public class V128Const : SimdInstruction, IEquatable<V128Const>
 
     internal override void Compile(CompilationContext context)
     {
-        var v = Value;
-        for (var i = 0; i < 16; i++)
-            context.Emit(OpCodes.Ldc_I4, (int)(uint)v[i]);
-        context.Emit(OpCodes.Call, V128Helper.CreateMethod.Reference);
+        var field = context.GetOrCreateV128ConstantField(Value, "☣ V128Const");
+        context.Emit(OpCodes.Ldsflda, field);
+        context.Emit(OpCodes.Ldobj, V128Helper.V128Type);
         context.Stack.Push(WebAssemblyValueType.V128);
     }
 

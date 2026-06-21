@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -40,6 +41,19 @@ public class CompilerConfiguration
         get => getDelegateForType;
         set => getDelegateForType = value ?? throw new ArgumentNullException(nameof(value));
     }
+
+    /// <summary>
+    /// Creates an optional per-instance profiler for compiled <c>call_indirect</c> sites.
+    /// When null, no profiling code is emitted.
+    /// </summary>
+    /// <remarks>This is supported for runtime compilation and intended as a foundation for future tiered/hot-path optimization work.</remarks>
+    public Func<ICallIndirectProfiler?>? CreateCallIndirectProfiler { get; set; }
+
+    /// <summary>
+    /// Provides optional guarded direct-call candidates for compiled <c>call_indirect</c> remappers.
+    /// Each hint is guarded by both element index and raw delegate identity, so normal fallback behavior is preserved when the table changes.
+    /// </summary>
+    public IReadOnlyList<CallIndirectDirectCallHint>? CallIndirectDirectCallHints { get; set; }
 
     /// <summary>
     /// Returns the standard .NET delegate type, i.e. <see cref="Func{T, TResult}"/>/<see cref="Action"/> or their peers, for the provided parameter and return count.

@@ -1,4 +1,4 @@
-﻿using System.Reflection.Emit;
+using System.Reflection.Emit;
 using WebAssembly.Runtime;
 using WebAssembly.Runtime.Compilation;
 using FloatHelper = WebAssembly.Runtime.FloatHelper;
@@ -30,19 +30,22 @@ public abstract class MemoryReadInstruction : MemoryImmediateInstruction
         this.ValidateAlignment();
         context.PopStackNoReturn(this.OpCode, addressType);
 
-        if (this.Offset != 0)
+        if (!TryEmitZeroOffsetInt32ReadFastPath(context) && !TryEmitOffsetReadFastPath(context))
         {
+            if (this.Offset != 0)
+            {
+                if (addressType == WebAssemblyValueType.Int64)
+                    context.Emit(OpCodes.Ldc_I8, (long)this.Offset);
+                else
+                    Int32Constant.Emit(context, unchecked((int)this.Offset));
+                context.Emit(OpCodes.Add_Ovf_Un);
+            }
+
             if (addressType == WebAssemblyValueType.Int64)
-                context.Emit(OpCodes.Ldc_I8, (long)this.Offset);
-            else
-                Int32Constant.Emit(context, (int)this.Offset);
-            context.Emit(OpCodes.Add_Ovf_Un);
+                context.Emit(OpCodes.Conv_Ovf_U4);
+
+            this.EmitRangeCheck(context);
         }
-
-        if (addressType == WebAssemblyValueType.Int64)
-            context.Emit(OpCodes.Conv_Ovf_U4);
-
-        this.EmitRangeCheck(context);
 
         context.EmitLoadThis();
         context.Emit(OpCodes.Ldfld, context.CheckedMemory);
@@ -86,5 +89,85 @@ public abstract class MemoryReadInstruction : MemoryImmediateInstruction
         }
 
         stack.Push(this.Type);
+    }
+
+    private bool TryEmitZeroOffsetInt32ReadFastPath(CompilationContext context)
+    {
+        if (context.MemoryAddressType != WebAssemblyValueType.Int32
+            || this.Offset != 0
+            || this.Type != WebAssemblyValueType.Int32
+            || this.Size != 4)
+            return false;
+
+        var addressLocal = context.DeclareLocal(typeof(int));
+        context.Emit(OpCodes.Stloc, addressLocal);
+        var slowPath = context.DefineLabel();
+        var done = context.DefineLabel();
+
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        context.Emit(OpCodes.Ldc_I4_4);
+        context.Emit(OpCodes.Blt_Un, slowPath);
+
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        context.Emit(OpCodes.Ldc_I4_4);
+        context.Emit(OpCodes.Sub);
+        context.Emit(OpCodes.Bgt_Un, slowPath);
+
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        context.Emit(OpCodes.Br, done);
+
+        context.MarkLabel(slowPath);
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        this.EmitRangeCheck(context);
+
+        context.MarkLabel(done);
+        return true;
+    }
+
+    private bool TryEmitOffsetReadFastPath(CompilationContext context)
+    {
+        if (context.MemoryAddressType != WebAssemblyValueType.Int32
+            || this.Offset == 0
+            || this.Offset > uint.MaxValue - this.Size)
+            return false;
+
+        var addressLocal = context.DeclareLocal(typeof(int));
+        context.Emit(OpCodes.Stloc, addressLocal);
+        var totalAccessBytes = this.Offset + this.Size;
+        var slowPath = context.DefineLabel();
+        var done = context.DefineLabel();
+
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        Int32Constant.Emit(context, unchecked((int)totalAccessBytes));
+        context.Emit(OpCodes.Blt_Un, slowPath);
+
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        Int32Constant.Emit(context, unchecked((int)totalAccessBytes));
+        context.Emit(OpCodes.Sub);
+        context.Emit(OpCodes.Bgt_Un, slowPath);
+
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        Int32Constant.Emit(context, unchecked((int)this.Offset));
+        context.Emit(OpCodes.Add);
+        context.Emit(OpCodes.Br, done);
+
+        context.MarkLabel(slowPath);
+        context.Emit(OpCodes.Ldloc, addressLocal);
+        Int32Constant.Emit(context, unchecked((int)this.Offset));
+        context.Emit(OpCodes.Add_Ovf_Un);
+        this.EmitRangeCheck(context);
+
+        context.MarkLabel(done);
+        return true;
     }
 }

@@ -28,7 +28,7 @@ public class CompilerTests
     }
 
     /// <summary>
-    /// Tests a compilation of an empty assembly compiled via <see cref="Module.Compile{TExports}"/>.
+    /// Tests a compilation of an empty assembly compiled via <see cref="Module.Compile{TExports}()"/>.
     /// </summary>
     [TestMethod]
     public void Compile_DirectFromModule()

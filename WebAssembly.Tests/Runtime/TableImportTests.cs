@@ -1,5 +1,6 @@
 ﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.IO;
 using System.Reflection;
 using WebAssembly.Instructions;
 
@@ -11,6 +12,9 @@ namespace WebAssembly.Runtime;
 [TestClass]
 public class TableImportTests
 {
+    private static int AddOne(int value) => value + 1;
+    private static int AddTen(int value) => value + 10;
+
     /// <summary>
     /// Tests adding a function delegate to an imported table.
     /// </summary>
@@ -101,6 +105,147 @@ public class TableImportTests
         Assert.AreEqual(0, calls);
         Assert.AreEqual(3, compiled.Exports.Test(2));
         Assert.AreEqual(1, calls);
+    }
+
+    /// <summary>
+    /// Tests that opt-in <c>call_indirect</c> profiling records hot site and target information.
+    /// </summary>
+    [TestMethod]
+    public void Compile_TableImport_CallIndirectProfilerRecordsTargets()
+    {
+        var module = new Module();
+        module.Types.Add(new WebAssemblyType
+        {
+            Returns = [WebAssemblyValueType.Int32],
+            Parameters = [WebAssemblyValueType.Int32]
+        });
+        module.Imports.Add(new Import.Table("Test", "Test", 1));
+        module.Functions.Add(new Function
+        {
+        });
+        module.Exports.Add(new Export
+        {
+            Name = "Test",
+        });
+        module.Codes.Add(new FunctionBody
+        {
+            Code =
+            [
+                    new LocalGet(0),
+                    new Int32Constant(0),
+                    new CallIndirect(0),
+                    new End()
+            ],
+        });
+
+        var profiler = new CallIndirectProfileCollector();
+        var configuration = new CompilerConfiguration
+        {
+            CreateCallIndirectProfiler = () => profiler,
+        };
+
+        Instance<CompilerTestBase<int>> compiled;
+        using (var memory = new MemoryStream())
+        {
+            module.WriteToBinary(memory);
+            memory.Position = 0;
+            var maker = Compile.FromBinary<CompilerTestBase<int>>(memory, configuration);
+            var table = new FunctionTable(1)
+            {
+                [0] = new Func<int, int>(AddOne),
+            };
+
+            compiled = maker(new ImportDictionary
+            {
+                { "Test", "Test", table },
+            });
+        }
+
+        Assert.AreEqual(3, compiled.Exports.Test(2));
+        Assert.AreEqual(6, compiled.Exports.Test(5));
+
+        var snapshot = profiler.Snapshot();
+        Assert.AreEqual(1, snapshot.Count);
+
+        var site = snapshot[0];
+        Assert.AreEqual(0u, site.TypeIndex);
+        Assert.AreEqual(0u, site.TableIndex);
+        Assert.AreEqual(0u, site.FunctionIndex);
+        Assert.IsTrue(site.InstructionOffset >= 0);
+        Assert.AreEqual(2L, site.TotalHits);
+        Assert.IsTrue(site.IsMonomorphic);
+        Assert.AreEqual(1, site.Targets.Count);
+
+        var target = site.Targets[0];
+        Assert.AreEqual(0u, target.ElementIndex);
+        Assert.AreEqual(2L, target.Hits);
+        Assert.AreEqual(typeof(Func<int, int>).FullName, target.DelegateType);
+        StringAssert.Contains(target.MethodName!, nameof(AddOne));
+    }
+
+    /// <summary>
+    /// Tests that guarded direct-call hints preserve correctness and fall back when the table entry changes.
+    /// </summary>
+    [TestMethod]
+    public void Compile_TableImport_CallIndirectDirectCallHintFallsBackAfterMutation()
+    {
+        var module = new Module();
+        module.Types.Add(new WebAssemblyType
+        {
+            Returns = [WebAssemblyValueType.Int32],
+            Parameters = [WebAssemblyValueType.Int32]
+        });
+        module.Imports.Add(new Import.Table("Test", "Test", 1));
+        module.Functions.Add(new Function());
+        module.Functions.Add(new Function());
+        module.Exports.Add(new Export("Test", index: 1));
+        module.Elements.Add(new Element(0, 0));
+        module.Codes.Add(new FunctionBody
+        {
+            Code =
+            [
+                new LocalGet(0),
+                new Int32Constant(1),
+                new Int32Add(),
+                new End()
+            ],
+        });
+        module.Codes.Add(new FunctionBody
+        {
+            Code =
+            [
+                new LocalGet(0),
+                new Int32Constant(0),
+                new CallIndirect(0),
+                new End()
+            ],
+        });
+
+        var configuration = new CompilerConfiguration
+        {
+            CallIndirectDirectCallHints =
+            [
+                new CallIndirectDirectCallHint(typeIndex: 0, tableIndex: 0, elementIndex: 0, functionIndex: 0, hotness: 1),
+            ],
+        };
+
+        Instance<CompilerTestBase<int>> compiled;
+        var table = new FunctionTable(1);
+        using (var memory = new MemoryStream())
+        {
+            module.WriteToBinary(memory);
+            memory.Position = 0;
+            var maker = Compile.FromBinary<CompilerTestBase<int>>(memory, configuration);
+            compiled = maker(new ImportDictionary
+            {
+                { "Test", "Test", table },
+            });
+        }
+
+        Assert.AreEqual(3, compiled.Exports.Test(2));
+
+        table[0] = new Func<int, int>(AddTen);
+        Assert.AreEqual(12, compiled.Exports.Test(2));
     }
 
     /// <summary>
