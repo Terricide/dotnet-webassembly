@@ -241,5 +241,8 @@ public class CallIndirect : Instruction, IEquatable<CallIndirect>
 
         if (returnTypes.Length > 1)
             EmitTupleUnpack(context, signature.ReturnTypes);
+
+        // The callee (or a host import it reaches) may have grown linear memory.
+        context.EmitRefreshMemoryCache();
     }
 }

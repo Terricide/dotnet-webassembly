@@ -87,6 +87,12 @@ public sealed class UnmanagedMemory : IDisposable
     public uint RawSize;
 
     /// <summary>
+    /// Allocated capacity in bytes. At least <see cref="RawSize"/>; the surplus lets
+    /// <see cref="Grow"/> avoid a full-buffer reallocation/copy on every growth step.
+    /// </summary>
+    private uint capacity;
+
+    /// <summary>
     /// Grows memory by <paramref name="delta"/> multiplied by <see cref="Memory.PageSize"/>.
     /// </summary>
     /// <param name="delta">The amount of memory pages to allocate.</param>
@@ -134,16 +140,20 @@ public sealed class UnmanagedMemory : IDisposable
 
             var newCurrent = oldCurrent + delta;
             var newSize = newCurrent * Memory.PageSize;
-            if (this.RawStart == default)
+            if (newSize > this.capacity)
             {
-                this.RawStart = Marshal.AllocHGlobal(new IntPtr(newSize));
-                ZeroMemory(this.RawStart, newSize);
+                // Reserve headroom (doubling, capped at the declared maximum) so repeated growth
+                // doesn't reallocate and copy the entire heap each time.
+                var maximumBytes = (ulong)this.Maximum * Memory.PageSize;
+                var newCapacity = (uint)Math.Min(maximumBytes, Math.Max((ulong)newSize, (ulong)this.capacity * 2));
+
+                if (this.RawStart == default)
+                    this.RawStart = Marshal.AllocHGlobal(new IntPtr(newCapacity));
+                else
+                    this.RawStart = Marshal.ReAllocHGlobal(this.RawStart, new IntPtr(newCapacity));
+                this.capacity = newCapacity;
             }
-            else
-            {
-                this.RawStart = Marshal.ReAllocHGlobal(this.RawStart, new IntPtr(newSize));
-                ZeroMemory(this.RawStart + checked((int)this.RawSize), newSize - this.RawSize);
-            }
+            ZeroMemory(this.RawStart + checked((int)this.RawSize), newSize - this.RawSize);
             this.RawSize = newSize;
 
             return oldCurrent;

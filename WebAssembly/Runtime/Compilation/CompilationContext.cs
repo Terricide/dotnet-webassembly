@@ -66,6 +66,68 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
         this.BlockContexts.Add(this.Depth.Count, new BlockContext());
 
         this.Labels.Add(0, generator.DefineLabel());
+
+        this.MemoryStartLocal = null;
+        this.MemorySizeLocal = null;
+        this.scratchLocals.Clear();
+    }
+
+    /// <summary>
+    /// Caches <see cref="UnmanagedMemory.RawStart"/> for the current function so memory accesses
+    /// avoid repeated field loads. Null when the current function doesn't access linear memory.
+    /// </summary>
+    public LocalBuilder? MemoryStartLocal;
+
+    /// <summary>
+    /// Caches <see cref="UnmanagedMemory.RawSize"/> (zero-extended to 64 bits) for the current function.
+    /// </summary>
+    public LocalBuilder? MemorySizeLocal;
+
+    public bool MemoryCacheActive => this.MemoryStartLocal is not null;
+
+    private readonly Dictionary<(Type Type, string Purpose), LocalBuilder> scratchLocals = [];
+
+    /// <summary>
+    /// Returns a function-scoped scratch local shared by all instructions that request the same
+    /// type and purpose. Only safe for values whose lifetime is contained within the IL emitted
+    /// for a single instruction, with no other scratch user of the same key in between.
+    /// </summary>
+    public LocalBuilder GetScratchLocal(Type type, string purpose)
+    {
+        if (!this.scratchLocals.TryGetValue((type, purpose), out var local))
+            this.scratchLocals.Add((type, purpose), local = this.DeclareLocal(type));
+        return local;
+    }
+
+    /// <summary>
+    /// Declares and initializes the memory base/size cache locals. Must be emitted in the
+    /// function prologue, before any instruction that may consume them.
+    /// </summary>
+    public void EmitInitMemoryCache()
+    {
+        this.MemoryStartLocal = this.DeclareLocal(typeof(IntPtr));
+        this.MemorySizeLocal = this.DeclareLocal(typeof(long));
+        this.EmitRefreshMemoryCache();
+    }
+
+    /// <summary>
+    /// Re-reads the memory base/size into the cache locals. Must be emitted after every operation
+    /// that may grow linear memory (calls, indirect calls, memory.grow) because growth can both
+    /// change the size and relocate the buffer. Stack-neutral.
+    /// </summary>
+    public void EmitRefreshMemoryCache()
+    {
+        if (this.MemoryStartLocal is null || this.MemorySizeLocal is null)
+            return;
+
+        this.EmitLoadThis();
+        this.Emit(OpCodes.Ldfld, this.CheckedMemory);
+        this.Emit(OpCodes.Dup);
+        this.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
+        this.Emit(OpCodes.Stloc, this.MemoryStartLocal);
+        this.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
+        this.Emit(OpCodes.Conv_U8);
+        this.Emit(OpCodes.Stloc, this.MemorySizeLocal);
     }
 
     public Signature[]? FunctionSignatures;
@@ -199,6 +261,13 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
 
     public WebAssemblyValueType[]? Locals;
 
+    /// <summary>
+    /// The <see cref="LocalBuilder"/>s for the current function's wasm locals (those beyond the
+    /// parameters), indexed by local index (wasm index minus parameter count). Used by the
+    /// outlined-region placeholder to pass locals to outlined helpers by reference.
+    /// </summary>
+    public LocalBuilder[] WasmLocalBuilders = [];
+
     public readonly BlockStack Depth = new();
 
     public OpCode Previous;
@@ -240,7 +309,155 @@ internal sealed class CompilationContext(CompilerConfiguration configuration)
 
     public void MarkLabel(Label loc) => CheckedGenerator.MarkLabel(loc);
 
-    public void EmitLoadThis() => CheckedGenerator.EmitLoadArg(CheckedSignature.ParameterTypes.Length);
+    /// <summary>
+    /// When non-null, the current method is an outlined helper: wasm locals are accessed through
+    /// by-reference parameters rather than this frame's args/locals. See <see cref="OutliningEnvironment"/>.
+    /// </summary>
+#pragma warning disable CS0649 // Assigned by the function-splitting driver in Compile.cs.
+    public OutliningEnvironment? Outlining;
+#pragma warning restore CS0649
+
+    /// <summary>
+    /// Describes how an outlined helper method reaches the original function's locals and instance.
+    /// </summary>
+    public sealed class OutliningEnvironment(IReadOnlyDictionary<uint, int> localToArgument, int thisArgument)
+    {
+        /// <summary>Maps a wasm local/param index to the helper argument (a managed by-ref) that aliases it.</summary>
+        public IReadOnlyDictionary<uint, int> LocalToArgument { get; } = localToArgument;
+
+        /// <summary>The helper argument index holding the <c>CompiledExports</c> instance.</summary>
+        public int ThisArgument { get; } = thisArgument;
+    }
+
+    public void EmitLoadThis()
+    {
+        if (this.Outlining is { } env)
+            CheckedGenerator.EmitLoadArg(env.ThisArgument);
+        else
+            CheckedGenerator.EmitLoadArg(CheckedSignature.ParameterTypes.Length);
+    }
+
+    /// <summary>Emits a read of the wasm local/param at <paramref name="index"/> onto the stack.</summary>
+    public void EmitLocalGet(uint index)
+    {
+        if (this.Outlining is { } env && env.LocalToArgument.TryGetValue(index, out var arg))
+        {
+            CheckedGenerator.EmitLoadArg(arg); // managed by-ref to the original local
+            EmitLoadIndirect(this.CheckedLocals[index]);
+            return;
+        }
+
+        var localIndex = index - CheckedSignature.ParameterTypes.Length;
+        if (localIndex < 0)
+        {
+            switch (index)
+            {
+                case 0: Emit(OpCodes.Ldarg_0); break;
+                case 1: Emit(OpCodes.Ldarg_1); break;
+                case 2: Emit(OpCodes.Ldarg_2); break;
+                case 3: Emit(OpCodes.Ldarg_3); break;
+                default:
+                    if (index <= byte.MaxValue)
+                        Emit(OpCodes.Ldarg_S, checked((byte)index));
+                    else
+                        Emit(OpCodes.Ldarg, checked((int)(ushort)index));
+                    break;
+            }
+        }
+        else
+        {
+            switch (localIndex)
+            {
+                case 0: Emit(OpCodes.Ldloc_0); break;
+                case 1: Emit(OpCodes.Ldloc_1); break;
+                case 2: Emit(OpCodes.Ldloc_2); break;
+                case 3: Emit(OpCodes.Ldloc_3); break;
+                default:
+                    if (localIndex > 65534)
+                        throw new CompilerException($"Implementation limit exceeded: maximum accessible local index is 65534, tried to access {localIndex}.");
+                    if (localIndex <= byte.MaxValue)
+                        Emit(OpCodes.Ldloc_S, (byte)localIndex);
+                    else
+                        Emit(OpCodes.Ldloc, checked((int)(ushort)localIndex));
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Emits a write of the top stack value into the wasm local/param at <paramref name="index"/>.</summary>
+    public void EmitLocalSet(uint index)
+    {
+        if (this.Outlining is { } env && env.LocalToArgument.TryGetValue(index, out var arg))
+        {
+            var type = this.CheckedLocals[index];
+            var tmp = GetScratchLocal(type.ToSystemType(), "outlineLocalSet");
+            Emit(OpCodes.Stloc, tmp);     // stash value
+            CheckedGenerator.EmitLoadArg(arg); // by-ref destination
+            Emit(OpCodes.Ldloc, tmp);     // value
+            EmitStoreIndirect(type);
+            return;
+        }
+
+        var localIndex = index - CheckedSignature.ParameterTypes.Length;
+        if (localIndex < 0)
+        {
+            if (index <= byte.MaxValue)
+                Emit(OpCodes.Starg_S, checked((byte)index));
+            else
+                Emit(OpCodes.Starg, checked((int)(ushort)index));
+        }
+        else
+        {
+            switch (localIndex)
+            {
+                case 0: Emit(OpCodes.Stloc_0); break;
+                case 1: Emit(OpCodes.Stloc_1); break;
+                case 2: Emit(OpCodes.Stloc_2); break;
+                case 3: Emit(OpCodes.Stloc_3); break;
+                default:
+                    if (localIndex > 65534)
+                        throw new CompilerException($"Implementation limit exceeded: maximum accessible local index is 65534, tried to access {localIndex}.");
+                    if (localIndex <= byte.MaxValue)
+                        Emit(OpCodes.Stloc_S, (byte)localIndex);
+                    else
+                        Emit(OpCodes.Stloc, checked((int)(ushort)localIndex));
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Like <see cref="EmitLocalSet"/> but leaves the value on the stack (local.tee).</summary>
+    public void EmitLocalTee(uint index)
+    {
+        Emit(OpCodes.Dup);
+        EmitLocalSet(index);
+    }
+
+    private void EmitLoadIndirect(WebAssemblyValueType type)
+    {
+        switch (type)
+        {
+            case WebAssemblyValueType.Int32: Emit(OpCodes.Ldind_I4); break;
+            case WebAssemblyValueType.Int64: Emit(OpCodes.Ldind_I8); break;
+            case WebAssemblyValueType.Float32: Emit(OpCodes.Ldind_R4); break;
+            case WebAssemblyValueType.Float64: Emit(OpCodes.Ldind_R8); break;
+            case WebAssemblyValueType.V128: Emit(OpCodes.Ldobj, V128Helper.V128Type); break;
+            default: Emit(OpCodes.Ldind_Ref); break; // funcref / externref
+        }
+    }
+
+    private void EmitStoreIndirect(WebAssemblyValueType type)
+    {
+        switch (type)
+        {
+            case WebAssemblyValueType.Int32: Emit(OpCodes.Stind_I4); break;
+            case WebAssemblyValueType.Int64: Emit(OpCodes.Stind_I8); break;
+            case WebAssemblyValueType.Float32: Emit(OpCodes.Stind_R4); break;
+            case WebAssemblyValueType.Float64: Emit(OpCodes.Stind_R8); break;
+            case WebAssemblyValueType.V128: Emit(OpCodes.Stobj, V128Helper.V128Type); break;
+            default: Emit(OpCodes.Stind_Ref); break; // funcref / externref
+        }
+    }
 
     public void Emit(ILOpCode opcode) => CheckedGenerator.Emit(opcode);
 

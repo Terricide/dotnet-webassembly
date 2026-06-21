@@ -55,6 +55,10 @@ public class GlobalGet : VariableAccessInstruction
 
         context.Emit(OpCodes.Call, global.Getter);
 
+        // Imported global getters run host code, which may grow linear memory.
+        if (this.Index < (uint)context.ImportedGlobalCount)
+            context.EmitRefreshMemoryCache();
+
         context.Stack.Push(global.Type);
     }
 }

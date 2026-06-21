@@ -670,7 +670,7 @@ public static class Compile
 
                 case Section.Code:
                     context.EnforceDeclaredFunctionReferences = true;
-                    SectionCode(reader, context, functionSignatures, internalFunctions, importedFunctions);
+                    SectionCode(reader, context, functionSignatures, internalFunctions, importedFunctions, configuration, exportsBuilder);
                     break;
 
                 case Section.Data:
@@ -2364,7 +2364,7 @@ public static class Compile
             SkipInitializerExpression(reader);
     }
 
-    static void SectionCode(Reader reader, CompilationContext context, Signature[]? functionSignatures, MethodInfo[]? internalFunctions, int importedFunctions)
+    static void SectionCode(Reader reader, CompilationContext context, Signature[]? functionSignatures, MethodInfo[]? internalFunctions, int importedFunctions, CompilerConfiguration configuration, TypeBuilder exportsBuilder)
     {
         var preBodiesIndex = reader.Offset;
         var functionBodies = reader.ReadVarUInt32();
@@ -2386,6 +2386,7 @@ public static class Compile
         for (var functionBodyIndex = 0; functionBodyIndex < functionBodies; functionBodyIndex++)
         {
             var signature = checkedFunctionSignatures[importedFunctions + functionBodyIndex];
+            var functionIndex = (uint)(importedFunctions + functionBodyIndex);
             var byteLength = reader.ReadVarUInt32();
             var startingOffset = reader.Offset;
 
@@ -2393,34 +2394,87 @@ public static class Compile
             for (var localIndex = 0; localIndex < locals.Length; localIndex++)
                 locals[localIndex] = new Local(reader);
 
-            var il = ((MethodBuilder)internalFunctions[importedFunctions + functionBodyIndex]).GetILGenerator();
+            var localTypes = locals
+                .SelectMany(local => Enumerable.Range(0, checked((int)local.Count)).Select(_ => local.Type))
+                .ToArray();
+            WebAssemblyValueType[] combinedLocals = [.. signature.RawParameterTypes, .. localTypes];
 
-            context.Reset(
-                il,
-                signature,
-                [
-                    .. signature.RawParameterTypes,
-                    .. locals
-                    .SelectMany(local => Enumerable.Range(0, checked((int)local.Count)).Select(_ => local.Type))
-,
-                ]);
-            context.CurrentFunctionIndex = (uint)(importedFunctions + functionBodyIndex);
-
-            foreach (var local in locals.SelectMany(local => Enumerable.Range(0, checked((int)local.Count)).Select(_ => local.Type)))
-            {
-                il.DeclareLocal(local.ToSystemType());
-            }
-
-            il.Emit(OpCodes.Call, typeof(RuntimeHelpers).GetMethod(nameof(RuntimeHelpers.EnsureSufficientExecutionStack))!);
-
+            // Buffer the body so it can be pre-scanned: functions that access linear memory get
+            // per-function locals caching the memory base/size for fast bounds checks, and oversized
+            // functions can be split into separately-optimizable helpers (see FunctionSplitter).
+            // Parse offsets are recorded so compile-time errors still report the position of the
+            // offending instruction rather than the end of the body.
+            var instructions = new List<Instruction>();
+            var instructionOffsets = new List<long>();
             foreach (var instruction in Instruction.Parse(reader))
             {
-                instruction.Compile(context);
-                context.Previous = instruction.OpCode;
+                instructions.Add(instruction);
+                instructionOffsets.Add(reader.Offset);
             }
 
             if (reader.Offset - startingOffset != byteLength)
                 throw new ModuleLoadException($"Instruction sequence reader ended after reading {reader.Offset - startingOffset} characters, expected {byteLength}.", reader.Offset);
+
+            // Outline oversized regions into helper methods first (this re-uses and re-resets the
+            // shared context to compile each helper); the parent is then compiled over a stream in
+            // which each outlined region is a single placeholder call.
+            FunctionSplitter.TrySplit(context, exportsBuilder, configuration, functionIndex, combinedLocals,
+                ref instructions, ref instructionOffsets);
+
+            var il = ((MethodBuilder)internalFunctions[importedFunctions + functionBodyIndex]).GetILGenerator();
+
+            context.Reset(il, signature, combinedLocals);
+            context.CurrentFunctionIndex = functionIndex;
+
+            var wasmLocalBuilders = new System.Reflection.Emit.LocalBuilder[localTypes.Length];
+            for (var i = 0; i < localTypes.Length; i++)
+                wasmLocalBuilders[i] = il.DeclareLocal(localTypes[i].ToSystemType());
+            context.WasmLocalBuilders = wasmLocalBuilders;
+
+            // The stack-depth probe guards against runaway recursion. A function that makes no
+            // calls cannot recurse, so call-free leaves skip the probe; any recursive cycle
+            // necessarily runs through a function that retains it.
+            if (instructions.Any(static instruction => instruction is Instructions.Call or Instructions.CallIndirect or FunctionSplitter.CallOutlinedRegion))
+                il.Emit(OpCodes.Call, typeof(RuntimeHelpers).GetMethod(nameof(RuntimeHelpers.EnsureSufficientExecutionStack))!);
+
+            // Note: the V128 lane/splat/extend loads intentionally stay on the legacy range-check
+            // path — measurements on SIMD-heavy code (swscale/libvpx kernels) showed the cached
+            // path is slower there, so only these instruction types consume the cache.
+            if (context.Memory != null
+                && instructions.Any(static instruction =>
+                    instruction is Instructions.MemoryImmediateInstruction
+                    or Instructions.V128Load
+                    or Instructions.V128Store))
+            {
+                context.EmitInitMemoryCache();
+            }
+
+            for (var i = 0; i < instructions.Count; i++)
+            {
+                var instruction = instructions[i];
+                try
+                {
+                    instruction.Compile(context);
+                }
+                catch (OverflowException x)
+#if DEBUG
+                    when (!System.Diagnostics.Debugger.IsAttached)
+#endif
+                {
+                    throw new ModuleLoadException("Overflow encountered.", instructionOffsets[i], x);
+                }
+                catch (Exception x) when (
+                    x is not CompilerException
+                    && x is not ModuleLoadException
+#if DEBUG
+                    && !System.Diagnostics.Debugger.IsAttached
+#endif
+                    )
+                {
+                    throw new ModuleLoadException(x.Message, instructionOffsets[i], x);
+                }
+                context.Previous = instruction.OpCode;
+            }
         }
     }
 

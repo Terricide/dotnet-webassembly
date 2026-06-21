@@ -81,5 +81,8 @@ public class MemoryGrow : Instruction
             return builder;
         }
         ]);
+
+        // Growth changes the memory size and may relocate the buffer.
+        context.EmitRefreshMemoryCache();
     }
 }

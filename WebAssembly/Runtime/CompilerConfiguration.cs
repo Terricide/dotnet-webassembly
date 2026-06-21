@@ -56,6 +56,29 @@ public class CompilerConfiguration
     public IReadOnlyList<CallIndirectDirectCallHint>? CallIndirectDirectCallHints { get; set; }
 
     /// <summary>
+    /// When enabled, function bodies whose IL would exceed the .NET JIT's full-optimization size
+    /// limit (which causes a fall back to unoptimized "MinOpts" codegen) are split: stack-isolated
+    /// void <c>block</c>/<c>loop</c> regions that no branch escapes are lifted into separate helper
+    /// methods small enough to be fully optimized. The locals such a region uses are passed by
+    /// reference. Off by default.
+    /// </summary>
+    public bool EnableFunctionSplitting { get; set; }
+
+    /// <summary>
+    /// The approximate wasm-instruction count above which a function is considered oversized and
+    /// eligible for splitting (only consulted when <see cref="EnableFunctionSplitting"/> is set).
+    /// The JIT abandons full optimization near ~60 KB of IL, roughly 6,600 wasm instructions.
+    /// </summary>
+    public int FunctionSplitInstructionThreshold { get; set; } = 6000;
+
+    /// <summary>
+    /// The smallest region (in wasm instructions) worth lifting into a helper method when
+    /// splitting; regions below this are left inline so a helper call never costs more than it
+    /// saves. Only consulted when <see cref="EnableFunctionSplitting"/> is set.
+    /// </summary>
+    public int FunctionSplitMinimumRegionInstructions { get; set; } = 64;
+
+    /// <summary>
     /// Returns the standard .NET delegate type, i.e. <see cref="Func{T, TResult}"/>/<see cref="Action"/> or their peers, for the provided parameter and return count.
     /// </summary>
     /// <param name="parameters">The number of parameters; if not 0 through 16 (inclusive), null is returned.</param>

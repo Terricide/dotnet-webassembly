@@ -41,35 +41,6 @@ public class LocalSet : VariableAccessInstruction
             throw new System.InvalidOperationException($"Attempt to set local at index {this.Index} but only {context.CheckedLocals.Length} {(context.CheckedLocals.Length == 1 ? "local was" : "locals were")} defined.");
         context.PopStackNoReturn(OpCode.LocalSet, context.CheckedLocals[this.Index]);
 
-        var localIndex = this.Index - context.CheckedSignature.ParameterTypes.Length;
-        if (localIndex < 0)
-        {
-            //Referring to a parameter.
-            if (this.Index <= byte.MaxValue)
-                context.Emit(OpCodes.Starg_S, checked((byte)this.Index));
-            else
-                context.Emit(OpCodes.Starg, checked((ushort)this.Index));
-        }
-        else
-        {
-            //Referring to a local.
-            switch (localIndex)
-            {
-                default:
-                    if (localIndex > 65534) // https://docs.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.stloc
-                        throw new CompilerException($"Implementation limit exceeded: maximum accessible local index is 65534, tried to access {localIndex}.");
-
-                    if (localIndex <= byte.MaxValue)
-                        context.Emit(OpCodes.Stloc_S, (byte)localIndex);
-                    else
-                        context.Emit(OpCodes.Stloc, checked((ushort)localIndex));
-                    break;
-
-                case 0: context.Emit(OpCodes.Stloc_0); break;
-                case 1: context.Emit(OpCodes.Stloc_1); break;
-                case 2: context.Emit(OpCodes.Stloc_2); break;
-                case 3: context.Emit(OpCodes.Stloc_3); break;
-            }
-        }
+        context.EmitLocalSet(this.Index);
     }
 }

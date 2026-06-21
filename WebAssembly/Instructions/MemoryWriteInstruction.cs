@@ -29,9 +29,17 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
         var addressType = context.MemoryAddressType;
         context.PopStackNoReturn(this.OpCode, this.Type, addressType);
 
-        var canTryFastPath = addressType == WebAssemblyValueType.Int32
-            && this.Offset != 0
-            && this.Offset <= uint.MaxValue - this.Size;
+        if (context.MemoryCacheActive
+            && addressType == WebAssemblyValueType.Int32
+            && this.Offset <= int.MaxValue)
+        {
+            var valueLocal = context.GetScratchLocal(this.Type.ToSystemType(), "memValue");
+            context.Emit(OpCodes.Stloc, valueLocal);
+            EmitBoundsCheckedAddress(context, this.Offset, this.Size, this.RangeCheckHelper);
+            context.Emit(OpCodes.Ldloc, valueLocal);
+            EmitStoreValue(context);
+            return;
+        }
 
         if (addressType == WebAssemblyValueType.Int64)
         {
@@ -103,58 +111,6 @@ public abstract class MemoryWriteInstruction : MemoryImmediateInstruction
 
         return builder;
     }
-
-    private bool TryEmitOffsetStoreFastPath(CompilationContext context, LocalBuilder valueLocal)
-    {
-        if (context.MemoryAddressType != WebAssemblyValueType.Int32
-            || this.Offset == 0
-            || this.Offset > uint.MaxValue - this.Size)
-            return false;
-
-        var addressLocal = context.DeclareLocal(typeof(int));
-        context.Emit(OpCodes.Stloc, addressLocal);
-
-        var totalAccessBytes = this.Offset + this.Size;
-        var slowPath = context.DefineLabel();
-        var done = context.DefineLabel();
-
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
-        Int32Constant.Emit(context, unchecked((int)totalAccessBytes));
-        context.Emit(OpCodes.Blt_Un, slowPath);
-
-        context.Emit(OpCodes.Ldloc, addressLocal);
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Ldfld, UnmanagedMemory.SizeField);
-        Int32Constant.Emit(context, unchecked((int)totalAccessBytes));
-        context.Emit(OpCodes.Sub);
-        context.Emit(OpCodes.Bgt_Un, slowPath);
-
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
-        context.Emit(OpCodes.Ldloc, addressLocal);
-        Int32Constant.Emit(context, unchecked((int)this.Offset));
-        context.Emit(OpCodes.Add);
-        context.Emit(OpCodes.Add);
-        context.Emit(OpCodes.Ldloc, valueLocal);
-        EmitStoreValue(context);
-        context.Emit(OpCodes.Br, done);
-
-        context.MarkLabel(slowPath);
-        context.Emit(OpCodes.Ldloc, addressLocal);
-        context.Emit(OpCodes.Ldloc, valueLocal);
-        Int32Constant.Emit(context, unchecked((int)this.Offset));
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Call, context[this.StoreHelper, this.CreateStoreMethod]);
-
-        context.MarkLabel(done);
-        return true;
-    }
-
-
 
     private void EmitStoreValue(CompilationContext context)
     {

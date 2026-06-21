@@ -41,19 +41,7 @@ public class V128Load : SimdInstruction, IEquatable<V128Load>
             throw new Runtime.CompilerException("alignment must not be larger than natural");
         context.PopStackNoReturn(this.OpCode, WebAssemblyValueType.Int32);
 
-        if (this.Offset != 0)
-        {
-            Int32Constant.Emit(context, (int)this.Offset);
-            context.Emit(OpCodes.Add_Ovf_Un);
-        }
-
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Call, context[HelperMethod.RangeCheck128, MemoryImmediateInstruction.CreateRangeCheck]);
-
-        context.EmitLoadThis();
-        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
-        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
-        context.Emit(OpCodes.Add);
+        MemoryImmediateInstruction.EmitBoundsCheckedAddress(context, this.Offset, 16, HelperMethod.RangeCheck128);
 
         context.Emit(OpCodes.Call, V128Helper.ReadUnalignedMethod.Reference);
 

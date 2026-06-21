@@ -126,6 +126,77 @@ public abstract class MemoryImmediateInstruction : Instruction, IEquatable<Memor
         context.Emit(OpCodes.Call, context[this.RangeCheckHelper, CreateRangeCheck]);
     }
 
+    /// <summary>
+    /// Consumes an address from the IL stack and leaves a bounds-checked native pointer to the
+    /// effective address (memory start + address + offset). When the per-function memory cache is
+    /// active, the check is a single 64-bit compare against the cached size; otherwise the legacy
+    /// range-check helper path is used.
+    /// </summary>
+    internal static void EmitBoundsCheckedAddress(CompilationContext context, uint offset, byte size, HelperMethod rangeCheckHelper)
+    {
+        if (context.MemoryCacheActive
+            && context.MemoryAddressType == WebAssemblyValueType.Int32
+            && offset <= int.MaxValue)
+        {
+            var address = context.GetScratchLocal(typeof(int), "memAddr");
+            var inRange = context.DefineLabel();
+
+            context.Emit(OpCodes.Stloc, address);
+            context.Emit(OpCodes.Ldloc, address);
+            context.Emit(OpCodes.Conv_U8);
+            context.Emit(OpCodes.Ldc_I8, (long)offset + size);
+            context.Emit(OpCodes.Add);
+            context.Emit(OpCodes.Ldloc, context.MemorySizeLocal!);
+            context.Emit(OpCodes.Ble_Un, inRange);
+
+            // Out of range: the helper re-checks against live memory state and throws.
+            // The cache is refreshed after every growth opportunity, so it cannot pass here;
+            // the call/pop keeps the IL stack consistent with the fast path for the verifier.
+            context.Emit(OpCodes.Ldloc, address);
+            if (offset != 0)
+            {
+                Int32Constant.Emit(context, unchecked((int)offset));
+                context.Emit(OpCodes.Add_Ovf_Un);
+            }
+            context.EmitLoadThis();
+            context.Emit(OpCodes.Call, context[rangeCheckHelper, CreateRangeCheck]);
+            context.Emit(OpCodes.Pop);
+
+            context.MarkLabel(inRange);
+            context.Emit(OpCodes.Ldloc, context.MemoryStartLocal!);
+            context.Emit(OpCodes.Ldloc, address);
+            context.Emit(OpCodes.Conv_U);
+            context.Emit(OpCodes.Add);
+            if (offset != 0)
+            {
+                Int32Constant.Emit(context, unchecked((int)offset));
+                context.Emit(OpCodes.Conv_U); // offset <= int.MaxValue, so zero- and sign-extension agree
+                context.Emit(OpCodes.Add);
+            }
+            return;
+        }
+
+        if (offset != 0)
+        {
+            if (context.MemoryAddressType == WebAssemblyValueType.Int64)
+                context.Emit(OpCodes.Ldc_I8, (long)offset);
+            else
+                Int32Constant.Emit(context, unchecked((int)offset));
+            context.Emit(OpCodes.Add_Ovf_Un);
+        }
+
+        if (context.MemoryAddressType == WebAssemblyValueType.Int64)
+            context.Emit(OpCodes.Conv_Ovf_U4);
+
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Call, context[rangeCheckHelper, CreateRangeCheck]);
+
+        context.EmitLoadThis();
+        context.Emit(OpCodes.Ldfld, context.CheckedMemory);
+        context.Emit(OpCodes.Ldfld, UnmanagedMemory.StartField);
+        context.Emit(OpCodes.Add);
+    }
+
     internal static MethodBuilder CreateRangeCheck(HelperMethod helper, CompilationContext context)
     {
         if (context.Memory == null)
